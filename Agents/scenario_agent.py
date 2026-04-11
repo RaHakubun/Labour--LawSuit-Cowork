@@ -47,6 +47,7 @@ class ScenarioToolExecutionResult:
 class ScenarioAgent:
     main_prompt: str = ""
     model: Optional[str] = None
+    template_root: Path = field(default_factory=lambda: SCENARIO_TEMPLATE_ROOT)
     llm_callable: Callable[..., str] = field(default=llm_call.chat_completion, repr=False)
     mcp_query_callable: Callable[..., str] = field(default=mcp_query, repr=False)
     allowed_tool_names: set[str] = field(default_factory=lambda: set(ALLOWED_MCP_SERVICE_NAMES))
@@ -66,12 +67,13 @@ class ScenarioAgent:
         return json.dumps(attachments_meta, ensure_ascii=False)
 
     def _resolve_template_path(self, template_path: str) -> Path:
+        template_root = self.template_root.resolve()
         path = Path(template_path)
         if path.is_absolute():
             resolved = path.resolve()
         else:
             project_candidate = (PROJECT_ROOT / path).resolve()
-            scenario_candidate = (SCENARIO_TEMPLATE_ROOT / path).resolve()
+            scenario_candidate = (template_root / path).resolve()
             cwd_candidate = (Path.cwd() / path).resolve()
 
             if project_candidate.exists():
@@ -81,9 +83,9 @@ class ScenarioAgent:
             else:
                 resolved = cwd_candidate
 
-        if SCENARIO_TEMPLATE_ROOT not in resolved.parents and resolved != SCENARIO_TEMPLATE_ROOT:
+        if template_root not in resolved.parents and resolved != template_root:
             raise ValueError(
-                f"Template path must be under {SCENARIO_TEMPLATE_ROOT}. Got: {resolved}"
+                f"Template path must be under {template_root}. Got: {resolved}"
             )
         if not resolved.exists():
             raise FileNotFoundError(f"Template not found: {resolved}")

@@ -37,7 +37,8 @@ class LabourCalculatorEngineTests(unittest.TestCase):
             "severance",
             {
                 "monthly_avg_wage_12m": 50000,
-                "local_avg_monthly_wage": 10000,
+                "province": "广东省",
+                "city": "深圳市",
                 "start_date": "2010-01-01",
                 "end_date": "2026-01-01",
                 "mode": "illegal_termination",
@@ -46,14 +47,18 @@ class LabourCalculatorEngineTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["breakdown"]["raw_n"], 16.0)
         self.assertEqual(result["breakdown"]["capped_n"], 12.0)
-        self.assertEqual(result["breakdown"]["wage_base"], 30000.0)
-        self.assertEqual(result["result"]["severance_amount"], 720000.0)
+        self.assertEqual(result["breakdown"]["wage_base"], 44265.0)
+        self.assertEqual(result["breakdown"]["province"], "广东省")
+        self.assertEqual(result["breakdown"]["city"], "深圳市")
+        self.assertEqual(result["result"]["severance_amount"], 1062360.0)
 
     def test_calculate_severance_n_plus_1_from_service_years(self):
         result = self.engine.calculate(
             "severance",
             {
                 "monthly_avg_wage_12m": 10000,
+                "province": "北京",
+                "city": "北京",
                 "service_years": 3.2,
                 "mode": "n_plus_1",
             },
@@ -62,6 +67,18 @@ class LabourCalculatorEngineTests(unittest.TestCase):
         self.assertEqual(result["breakdown"]["raw_n"], 3.5)
         self.assertEqual(result["breakdown"]["payable_months"], 4.5)
         self.assertEqual(result["result"]["severance_amount"], 45000.0)
+
+    def test_calculate_severance_requires_province_city(self):
+        result = self.engine.calculate(
+            "severance",
+            {
+                "monthly_avg_wage_12m": 10000,
+                "service_years": 1,
+                "mode": "normal",
+            },
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("province is required", result["errors"][0])
 
     def test_calculate_medical_period_national(self):
         result = self.engine.calculate(
@@ -203,4 +220,3 @@ class LabourCalculatorEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

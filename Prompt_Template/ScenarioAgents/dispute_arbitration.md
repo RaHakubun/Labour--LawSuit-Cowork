@@ -123,7 +123,7 @@
       "properties": {
         "scene_id": {
           "type": "string",
-          "enum": ["recruitment_probation"],
+          "enum": ["dispute_arbitration"],
           "description": "业务场景标识"
         },
         "confidence_level": {

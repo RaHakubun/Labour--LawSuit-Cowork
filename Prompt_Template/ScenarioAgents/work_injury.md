@@ -121,7 +121,7 @@
       "properties": {
         "scene_id": {
           "type": "string",
-          "enum": ["recruitment_probation"],
+          "enum": ["work_injury"],
           "description": "业务场景标识"
         },
         "confidence_level": {

@@ -1,0 +1,95 @@
+{
+  "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
+  "role_id": "worker",
+  "stage": "controller",
+  "created_at_utc": "2026-04-11T07:15:07Z",
+  "updated_at_utc": "2026-04-11T07:20:35Z",
+  "turn_id": 1,
+  "scene_id": "",
+  "scenario_template_path": "",
+  "scenario_output": null,
+  "scenario_tool_history": "",
+  "controller_template_path": "/Users/luobowen/Documents/Labour--LawSuit-Cowork/Prompt_Template/ControllerAgent.md",
+  "legal_template_path": "/Users/luobowen/Documents/Labour--LawSuit-Cowork/Prompt_Template/LegalAnalysisAgent.md",
+  "scenario_template_root": "/Users/luobowen/Documents/Labour--LawSuit-Cowork/Prompt_Template/ScenarioAgents",
+  "pending_transition": null,
+  "pending_stage": "",
+  "pending_payload": {},
+  "inject_rejection_prefix_on_next_turn": false,
+  "current_module_key": "",
+  "messages": [
+    {
+      "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
+      "turn_id": 1,
+      "speaker_type": "user",
+      "speaker_agent": "ControllerAgent",
+      "role_id": "worker",
+      "created_at_utc": "2026-04-11T07:20:24Z",
+      "display_blocks": [
+        {
+          "kind": "user_message",
+          "title": "用户输入",
+          "text": "【用户选择模块】博弈锦囊与话术\nwww",
+          "items": [],
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
+      "turn_id": 1,
+      "speaker_type": "agent",
+      "speaker_agent": "ControllerAgent",
+      "role_id": "worker",
+      "created_at_utc": "2026-04-11T07:20:35Z",
+      "display_blocks": [
+        {
+          "kind": "agent_message",
+          "title": "ControllerAgent 追问",
+          "text": "我先帮你厘清一下你适合哪一类“博弈锦囊与话术”。目前只看到“www”这几个字，还完全不知道你是在哪个环节遇到问题。为了给你设计针对性的沟通话术，需要你先把情况讲清楚：\n\n1）你目前所处的大致阶段\n- 你现在是：准备入职 / 已在职 / 正在被谈离职或裁员 / 已离职在维权？\n- 你主要想和谁“博弈”：直属领导、人力HR、老板，还是仲裁/法院前的对手方代理人？\n\n2）大致场景归类\n下面挑最贴近的一类告诉我（可多选，也可以自己补充）：\n- A. 招聘入职与试用期：比如试用期被说不合格、要降薪/解除、不给转正、入职前offer变卦等\n- B. 调岗调薪：比如强制调岗、降职降薪、不合理轮岗、外派等\n- C. 绩效与处分：比如被打低绩效、记过、警告、以“绩效不达标”为由威胁解除等\n- D. 工资与加班社保：比如工资被拖欠/少发、加班不结算、社保不缴或少缴、年假工资争议等\n- E. 请假与病假：比如请病假被质疑、医疗期安排、病假工资太低、不让休假等\n- F. 怀孕生育“三期”保护：比如怀孕后被要求离职、调岗、降薪或者不续签等\n- G. 工伤问题：比如工伤认定、停工留薪期、工伤待遇、单位不配合报工伤等\n- H. 协商离职/裁员：比如被约谈“谈谈未来打算”、被要求签离职协议、N/N+1怎么谈等\n- I. 竞业限制与保密：比如签了竞业、补偿太低、离职后想去竞争对手公司等\n- J. 已经进入仲裁/诉讼：比如要去仲裁前、已经收到开庭通知、对方发来和解方案等\n\n3）你现在最紧迫的一次沟通是什么场景？\n- 你打算什么时候跟对方谈？是已经约了谈话（具体时间）还是随时有可能被叫去“小黑屋”？\n- 你最担心对方说出哪些话/提出哪些要求？（例如：让你主动辞职、不补偿直接走、签对你非常不利的协议等）\n- 你希望通过这次“博弈”具体拿到什么结果？（例如：拿到N+1补偿、保住岗位、延迟离职时间、争取加班费等）\n\n4）基本信息\n- 你是劳动者本人，还是帮别人（家人/朋友/公司）来咨询？\n- 所在城市/省份是哪里？公司大致性质：私企/外企/国企/事业单位/平台型公司等？\n- 工作年限大概多久？在这家公司的在职年限多久？\n\n5）你手里已经有哪些“筹码”或材料\n- 是否签订书面劳动合同？是否能拿到劳动合同的复印件或照片？\n- 是否有工资条、考勤记录、绩效考核结果、考核邮件/聊天记录、谈话录音等？\n- 最近一次和HR/领导关于这件事的聊天记录或谈话内容，大致是怎么说的？\n\n你可以用“我现在的情况是：……”这样一段话把事情先按时间顺序讲一遍：从【事情的起点】→【对方怎么做/怎么说】→【你怎么回应】→【现在僵在什么地方】，我再根据你的具体场景，给你定制对应的博弈思路和话术模板。",
+          "items": [],
+          "metadata": {}
+        }
+      ]
+    }
+  ],
+  "handoffs": [],
+  "event_log": [
+    {
+      "event_id": "11065610831c465190ffb1f0fd575a85",
+      "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
+      "turn_id": 1,
+      "stage": "controller",
+      "event_type": "user_message",
+      "created_at_utc": "2026-04-11T07:20:24Z",
+      "payload": {
+        "speaker_agent": "ControllerAgent",
+        "text": "【用户选择模块】博弈锦囊与话术\nwww"
+      }
+    },
+    {
+      "event_id": "c2fa582d545142b995f487eeb6775793",
+      "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
+      "turn_id": 1,
+      "stage": "controller",
+      "event_type": "agent_message",
+      "created_at_utc": "2026-04-11T07:20:35Z",
+      "payload": {
+        "speaker_agent": "ControllerAgent",
+        "block_count": 1,
+        "preview": "ControllerAgent 追问"
+      }
+    }
+  ],
+  "controller_conversation_messages": [
+    [
+      "User",
+      "【用户选择模块】博弈锦囊与话术\nwww"
+    ],
+    [
+      "Agent",
+      "{\"askmore\":\"yes\",\"ask\":\"我先帮你厘清一下你适合哪一类“博弈锦囊与话术”。目前只看到“www”这几个字，还完全不知道你是在哪个环节遇到问题。为了给你设计针对性的沟通话术，需要你先把情况讲清楚：\\n\\n1）你目前所处的大致阶段\\n- 你现在是：准备入职 / 已在职 / 正在被谈离职或裁员 / 已离职在维权？\\n- 你主要想和谁“博弈”：直属领导、人力HR、老板，还是仲裁/法院前的对手方代理人？\\n\\n2）大致场景归类\\n下面挑最贴近的一类告诉我（可多选，也可以自己补充）：\\n- A. 招聘入职与试用期：比如试用期被说不合格、要降薪/解除、不给转正、入职前offer变卦等\\n- B. 调岗调薪：比如强制调岗、降职降薪、不合理轮岗、外派等\\n- C. 绩效与处分：比如被打低绩效、记过、警告、以“绩效不达标”为由威胁解除等\\n- D. 工资与加班社保：比如工资被拖欠/少发、加班不结算、社保不缴或少缴、年假工资争议等\\n- E. 请假与病假：比如请病假被质疑、医疗期安排、病假工资太低、不让休假等\\n- F. 怀孕生育“三期”保护：比如怀孕后被要求离职、调岗、降薪或者不续签等\\n- G. 工伤问题：比如工伤认定、停工留薪期、工伤待遇、单位不配合报工伤等\\n- H. 协商离职/裁员：比如被约谈“谈谈未来打算”、被要求签离职协议、N/N+1怎么谈等\\n- I. 竞业限制与保密：比如签了竞业、补偿太低、离职后想去竞争对手公司等\\n- J. 已经进入仲裁/诉讼：比如要去仲裁前、已经收到开庭通知、对方发来和解方案等\\n\\n3）你现在最紧迫的一次沟通是什么场景？\\n- 你打算什么时候跟对方谈？是已经约了谈话（具体时间）还是随时有可能被叫去“小黑屋”？\\n- 你最担心对方说出哪些话/提出哪些要求？（例如：让你主动辞职、不补偿直接走、签对你非常不利的协议等）\\n- 你希望通过这次“博弈”具体拿到什么结果？（例如：拿到N+1补偿、保住岗位、延迟离职时间、争取加班费等）\\n\\n4）基本信息\\n- 你是劳动者本人，还是帮别人（家人/朋友/公司）来咨询？\\n- 所在城市/省份是哪里？公司大致性质：私企/外企/国企/事业单位/平台型公司等？\\n- 工作年限大概多久？在这家公司的在职年限多久？\\n\\n5）你手里已经有哪些“筹码”或材料\\n- 是否签订书面劳动合同？是否能拿到劳动合同的复印件或照片？\\n- 是否有工资条、考勤记录、绩效考核结果、考核邮件/聊天记录、谈话录音等？\\n- 最近一次和HR/领导关于这件事的聊天记录或谈话内容，大致是怎么说的？\\n\\n你可以用“我现在的情况是：……”这样一段话把事情先按时间顺序讲一遍：从【事情的起点】→【对方怎么做/怎么说】→【你怎么回应】→【现在僵在什么地方】，我再根据你的具体场景，给你定制对应的博弈思路和话术模板。\"}"
+    ]
+  ],
+  "scenario_conversation_messages": []
+}

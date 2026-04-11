@@ -44,7 +44,6 @@ class ScenarioAgentTests(unittest.TestCase):
                 '{"askmore":"no","user_input":"U1\\nU2","analysis":{"scene_id":"recruitment_probation"}}',
             ]
         )
-        agent = ScenarioAgent(main_prompt="scenario_system", llm_callable=fake_llm)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             template_dir = Path(tmp_dir) / "Prompt_Template" / "ScenarioAgents"
@@ -54,28 +53,26 @@ class ScenarioAgentTests(unittest.TestCase):
                 "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
                 encoding="utf-8",
             )
+            agent = ScenarioAgent(
+                main_prompt="scenario_system",
+                llm_callable=fake_llm,
+                template_root=template_dir.resolve(),
+            )
 
-            from Agents import scenario_agent as scenario_agent_module
+            first = agent.run_turn("第一轮", template_path=str(template_path))
+            self.assertEqual(first.askmore, "yes")
+            self.assertIn("user=第一轮", first.injected_prompt)
+            self.assertEqual(first.conversation_context.strip(), "User: 第一轮")
 
-            original_root = scenario_agent_module.SCENARIO_TEMPLATE_ROOT
-            scenario_agent_module.SCENARIO_TEMPLATE_ROOT = template_dir.resolve()
-            try:
-                first = agent.run_turn("第一轮", template_path=str(template_path))
-                self.assertEqual(first.askmore, "yes")
-                self.assertIn("user=第一轮", first.injected_prompt)
-                self.assertEqual(first.conversation_context.strip(), "User: 第一轮")
+            second = agent.run_turn("第二轮", template_path=str(template_path))
+            self.assertEqual(second.askmore, "no")
+            self.assertIn("User: 第一轮", second.conversation_context)
+            self.assertIn("Agent: {\"askmore\":\"yes\",\"ask\":\"请补充信息\"}", second.conversation_context)
 
-                second = agent.run_turn("第二轮", template_path=str(template_path))
-                self.assertEqual(second.askmore, "no")
-                self.assertIn("User: 第一轮", second.conversation_context)
-                self.assertIn("Agent: {\"askmore\":\"yes\",\"ask\":\"请补充信息\"}", second.conversation_context)
-
-                second_prompt = fake_llm.calls[1]["user_prompt"]
-                self.assertIn("ctx=User: 第一轮", second_prompt)
-                self.assertIn("Agent: {\"askmore\":\"yes\",\"ask\":\"请补充信息\"}", second_prompt)
-                self.assertEqual(fake_llm.calls[1]["system_prompt"], "scenario_system")
-            finally:
-                scenario_agent_module.SCENARIO_TEMPLATE_ROOT = original_root
+            second_prompt = fake_llm.calls[1]["user_prompt"]
+            self.assertIn("ctx=User: 第一轮", second_prompt)
+            self.assertIn("Agent: {\"askmore\":\"yes\",\"ask\":\"请补充信息\"}", second_prompt)
+            self.assertEqual(fake_llm.calls[1]["system_prompt"], "scenario_system")
 
     def test_chat_console_ends_when_askmore_no(self):
         fake_llm = FakeLLM(
@@ -83,7 +80,6 @@ class ScenarioAgentTests(unittest.TestCase):
                 '{"askmore":"no","user_input":"第一轮输入","analysis":{"scene_id":"recruitment_probation"}}'
             ]
         )
-        agent = ScenarioAgent(main_prompt="", llm_callable=fake_llm)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             template_dir = Path(tmp_dir) / "Prompt_Template" / "ScenarioAgents"
@@ -93,29 +89,26 @@ class ScenarioAgentTests(unittest.TestCase):
                 "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
                 encoding="utf-8",
             )
+            agent = ScenarioAgent(
+                main_prompt="",
+                llm_callable=fake_llm,
+                template_root=template_dir.resolve(),
+            )
+            output_buffer = io.StringIO()
 
-            from Agents import scenario_agent as scenario_agent_module
+            def fake_output(message):
+                output_buffer.write(str(message) + "\n")
 
-            original_root = scenario_agent_module.SCENARIO_TEMPLATE_ROOT
-            scenario_agent_module.SCENARIO_TEMPLATE_ROOT = template_dir.resolve()
-            try:
-                output_buffer = io.StringIO()
+            agent.chat_console(
+                initial_user_input="第一轮输入",
+                template_path=str(template_path),
+                input_func=lambda _="": "不会被读取",
+                output_func=fake_output,
+            )
 
-                def fake_output(message):
-                    output_buffer.write(str(message) + "\n")
-
-                agent.chat_console(
-                    initial_user_input="第一轮输入",
-                    template_path=str(template_path),
-                    input_func=lambda _="": "不会被读取",
-                    output_func=fake_output,
-                )
-
-                out = output_buffer.getvalue()
-                self.assertIn("askmore=no, session ended.", out)
-                self.assertIn('"askmore": "no"', out)
-            finally:
-                scenario_agent_module.SCENARIO_TEMPLATE_ROOT = original_root
+            out = output_buffer.getvalue()
+            self.assertIn("askmore=no, session ended.", out)
+            self.assertIn('"askmore": "no"', out)
 
     def test_chat_console_continues_on_askmore_yes_then_no(self):
         fake_llm = FakeLLM(
@@ -124,7 +117,6 @@ class ScenarioAgentTests(unittest.TestCase):
                 '{"askmore":"no","user_input":"第一轮输入\\n第二轮输入","analysis":{"scene_id":"recruitment_probation"}}',
             ]
         )
-        agent = ScenarioAgent(main_prompt="", llm_callable=fake_llm)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             template_dir = Path(tmp_dir) / "Prompt_Template" / "ScenarioAgents"
@@ -134,34 +126,31 @@ class ScenarioAgentTests(unittest.TestCase):
                 "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
                 encoding="utf-8",
             )
+            agent = ScenarioAgent(
+                main_prompt="",
+                llm_callable=fake_llm,
+                template_root=template_dir.resolve(),
+            )
+            inputs = iter(["第二轮输入"])
+            output_buffer = io.StringIO()
 
-            from Agents import scenario_agent as scenario_agent_module
+            def fake_input(_prompt=""):
+                return next(inputs)
 
-            original_root = scenario_agent_module.SCENARIO_TEMPLATE_ROOT
-            scenario_agent_module.SCENARIO_TEMPLATE_ROOT = template_dir.resolve()
-            try:
-                inputs = iter(["第二轮输入"])
-                output_buffer = io.StringIO()
+            def fake_output(message):
+                output_buffer.write(str(message) + "\n")
 
-                def fake_input(_prompt=""):
-                    return next(inputs)
+            agent.chat_console(
+                initial_user_input="第一轮输入",
+                template_path=str(template_path),
+                input_func=fake_input,
+                output_func=fake_output,
+            )
 
-                def fake_output(message):
-                    output_buffer.write(str(message) + "\n")
-
-                agent.chat_console(
-                    initial_user_input="第一轮输入",
-                    template_path=str(template_path),
-                    input_func=fake_input,
-                    output_func=fake_output,
-                )
-
-                out = output_buffer.getvalue()
-                self.assertIn("Agent Ask: 请补充合同签署时间和证据", out)
-                self.assertIn("User: 第二轮输入", out)
-                self.assertIn("askmore=no, session ended.", out)
-            finally:
-                scenario_agent_module.SCENARIO_TEMPLATE_ROOT = original_root
+            out = output_buffer.getvalue()
+            self.assertIn("Agent Ask: 请补充合同签署时间和证据", out)
+            self.assertIn("User: 第二轮输入", out)
+            self.assertIn("askmore=no, session ended.", out)
 
     def test_normalize_tool_calls_supports_tool_map(self):
         agent = ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no"}']))

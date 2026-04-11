@@ -122,7 +122,7 @@
       "properties": {
         "scene_id": {
           "type": "string",
-          "enum": ["recruitment_probation"],
+          "enum": ["female_protection"],
           "description": "业务场景标识"
         },
         "confidence_level": {

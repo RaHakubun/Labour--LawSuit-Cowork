@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Any, Callable
 
+from .city_wage_data import resolve_city_wage
 
 MONTHLY_PAID_DAYS = Decimal("21.75")
 MONTHLY_WORK_DAYS = Decimal("20.67")
@@ -281,7 +282,11 @@ class LabourCalculatorEngine:
             _to_decimal(payload.get("monthly_avg_wage_12m"), "monthly_avg_wage_12m"),
             "monthly_avg_wage_12m",
         )
-        local_avg_monthly_wage = payload.get("local_avg_monthly_wage")
+        province = payload.get("province")
+        city = payload.get("city")
+        if not isinstance(province, str) or not province.strip():
+            raise CalculatorInputError("province is required for severance calculation")
+        record = resolve_city_wage(province=province, city=city)
 
         if payload.get("service_years") is not None:
             raw_n = _service_n_from_years(
@@ -293,16 +298,9 @@ class LabourCalculatorEngine:
             raw_n = _service_n_from_dates(start_date, end_date)
 
         capped_n = min(raw_n, Decimal("12"))
-        wage_cap = None
-        if local_avg_monthly_wage is not None:
-            local_avg = _must_non_negative(
-                _to_decimal(local_avg_monthly_wage, "local_avg_monthly_wage"),
-                "local_avg_monthly_wage",
-            )
-            wage_cap = local_avg * Decimal("3")
-            wage_base = min(monthly_avg_wage_12m, wage_cap)
-        else:
-            wage_base = monthly_avg_wage_12m
+        local_avg = _must_non_negative(record.avg_wage, "local_avg_monthly_wage")
+        wage_cap = local_avg * Decimal("3")
+        wage_base = min(monthly_avg_wage_12m, wage_cap)
 
         mode = str(payload.get("mode", "")).strip().lower()
         if not mode:
@@ -328,9 +326,7 @@ class LabourCalculatorEngine:
             rule = "severance_2n"
 
         total = wage_base * payable_months
-        rules = [rule, "severance_n_cap_12"]
-        if wage_cap is not None:
-            rules.append("severance_wage_cap_3x_local_avg")
+        rules = [rule, "severance_n_cap_12", "severance_wage_cap_3x_local_avg"]
 
         return {
             "result": {"severance_amount": _d2f(total)},
@@ -340,6 +336,10 @@ class LabourCalculatorEngine:
                 "payable_months": float(payable_months),
                 "wage_base": _d2f(wage_base),
                 "monthly_avg_wage_12m": _d2f(monthly_avg_wage_12m),
+                "local_avg_monthly_wage": _d2f(local_avg),
+                "wage_cap_3x_local_avg": _d2f(wage_cap),
+                "province": record.province,
+                "city": record.city,
                 "mode": mode,
             },
             "inputs": payload,
@@ -516,4 +516,3 @@ class LabourCalculatorEngine:
             "inputs": payload,
             "rules_applied": rules,
         }
-

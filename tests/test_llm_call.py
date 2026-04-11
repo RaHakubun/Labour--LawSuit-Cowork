@@ -40,8 +40,16 @@ class _FakeClient:
 
 class LLMCallTests(unittest.TestCase):
     def test_get_client_raises_import_error_when_openai_not_installed(self):
-        with self.assertRaises(ImportError) as ctx:
-            llm_call.get_client()
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "openai":
+                raise ImportError("No module named 'openai'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(ImportError) as ctx:
+                llm_call.get_client()
 
         self.assertIn('openai', str(ctx.exception).lower())
 

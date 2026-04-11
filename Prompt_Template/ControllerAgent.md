@@ -82,7 +82,18 @@ dispute_arbitration	劳动争议、仲裁与诉讼准备	争议处理中	劳动�
       "properties": {
         "scene_id": {
           "type": "string",
-          "enum": ["recruitment_probation"],
+          "enum": [
+            "recruitment_probation",
+            "adjustment_transfer",
+            "performance_discipline",
+            "salary_overtime_social",
+            "leave_medical_period",
+            "female_protection",
+            "work_injury",
+            "termination_layoff",
+            "noncompete_confidentiality",
+            "dispute_arbitration"
+          ],
           "description": "业务场景标识"
         },
         "confidence_level": {
