@@ -55,7 +55,7 @@ class SessionServiceTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -99,7 +99,7 @@ class SessionServiceTests(unittest.TestCase):
         )
         legal_llm = FakeLLM(
             [
-                '{"askmore":"no","analysis":"# 法律分析\\n可考虑违约与缔约过失路径。"}',
+                '{"askmore":"no","analysis":"# 法律分析\\n可考虑违约与缔约过失路径。","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}',
             ]
         )
         fake_mcp = FakeMCP()
@@ -155,7 +155,7 @@ class SessionServiceTests(unittest.TestCase):
         self.assertEqual(turn.active_agent, "LegalAnalysisAgent")
         self.assertEqual(len(turn.handoffs), 1)
         self.assertEqual(turn.handoffs[0].from_agent, "ScenarioAgent")
-        self.assertEqual(summary["stage"], "done")
+        self.assertEqual(summary["stage"], "legal")
         self.assertEqual(len(fake_mcp.calls), 1)
 
     def test_session_persistence_reload_and_continue(self):
@@ -189,7 +189,7 @@ class SessionServiceTests(unittest.TestCase):
                     main_prompt="", llm_callable=first_round_controller_llm
                 ),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -228,7 +228,7 @@ class SessionServiceTests(unittest.TestCase):
                 ]
             )
             legal_llm = FakeLLM(
-                ['{"askmore":"no","analysis":"# 结论\\n可主张缔约过失责任与损失赔偿。"}']
+                ['{"askmore":"no","analysis":"# 结论\\n可主张缔约过失责任与损失赔偿。","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}']
             )
 
             service2 = MultiAgentSessionService(
@@ -265,9 +265,111 @@ class SessionServiceTests(unittest.TestCase):
 
         self.assertEqual(second_turn.askmore, "no")
         self.assertEqual(second_turn.active_agent, "LegalAnalysisAgent")
-        self.assertEqual(summary_after["stage"], "done")
+        self.assertEqual(summary_after["stage"], "legal")
         self.assertGreaterEqual(summary_after["message_count"], 6)
         self.assertEqual(len(fake_mcp.calls), 1)
+
+    def test_legal_stage_allows_followup_after_askmore_no(self):
+        controller_llm = FakeLLM(
+            ['{"askmore":"no","user_input":"用户原文","analysis":{"scene_id":"recruitment_probation","confidence_level":"C3","escalation_flags":"L1","current_status":"已被拒绝入职","user_appeal":"主张赔偿","faced_problems":"证据不足","route_plan":"场景细化"}}']
+        )
+        scenario_llm = FakeLLM(
+            ['{"askmore":"no","analysis":{"scene_id":"recruitment_probation","current_status":"状态","user_appeal":"诉求","faced_problems":"问题","route_plan":"计划"},"tool":{"toolname1":"mcp_query(\\"检索司法案例-语义\\",\\"实习期毁约案例\\")"}}']
+        )
+        legal_llm = FakeLLM(
+            [
+                '{"askmore":"no","analysis":"# 第一版报告\\n可主张缔约过失。","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}',
+                '{"askmore":"yes","query":"我继续补充解释：你可以主张合理信赖损失。"}',
+            ]
+        )
+        fake_mcp = FakeMCP()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            controller_template = tmp / "ControllerAgent.md"
+            legal_template = tmp / "LegalAnalysisAgent.md"
+            scenario_root = tmp / "ScenarioAgents"
+            scenario_root.mkdir(parents=True, exist_ok=True)
+            (scenario_root / "recruitment_probation.md").write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            controller_template.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            legal_template.write_text("history={Tool_Call_History}", encoding="utf-8")
+
+            service = MultiAgentSessionService(
+                controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
+                scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=scenario_llm, mcp_query_callable=fake_mcp),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=legal_llm, mcp_query_callable=fake_mcp),
+                controller_template_path=str(controller_template),
+                legal_template_path=str(legal_template),
+                scenario_template_root=scenario_root,
+                scenario_tool_retry_times=0,
+            )
+
+            session = service.create_session("worker")
+            service.submit_turn(session.session_id, "我在拿到offer前被解雇了")
+            service.confirm_handoff(session.session_id, approve=True)
+            first_legal = service.confirm_handoff(session.session_id, approve=True)
+            second_legal = service.submit_turn(session.session_id, "那我还能继续问吗？")
+            summary = service.get_session_summary(session.session_id)
+
+        self.assertEqual(first_legal.askmore, "no")
+        self.assertEqual(second_legal.askmore, "yes")
+        self.assertEqual(summary["stage"], "legal")
+
+    def test_legal_stage_end_closes_session(self):
+        controller_llm = FakeLLM(
+            ['{"askmore":"no","user_input":"用户原文","analysis":{"scene_id":"recruitment_probation","confidence_level":"C3","escalation_flags":"L1","current_status":"已被拒绝入职","user_appeal":"主张赔偿","faced_problems":"证据不足","route_plan":"场景细化"}}']
+        )
+        scenario_llm = FakeLLM(
+            ['{"askmore":"no","analysis":{"scene_id":"recruitment_probation","current_status":"状态","user_appeal":"诉求","faced_problems":"问题","route_plan":"计划"}}']
+        )
+        legal_llm = FakeLLM(
+            [
+                '{"askmore":"end","query":"本轮结束","analysis":"# 最终报告\\n建议仲裁。","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}',
+                '{"askmore":"yes","query":"请补充证据细节","analysis":"继续追问。"}',
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            controller_template = tmp / "ControllerAgent.md"
+            legal_template = tmp / "LegalAnalysisAgent.md"
+            scenario_root = tmp / "ScenarioAgents"
+            scenario_root.mkdir(parents=True, exist_ok=True)
+            (scenario_root / "recruitment_probation.md").write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            controller_template.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            legal_template.write_text("history={Tool_Call_History}", encoding="utf-8")
+
+            service = MultiAgentSessionService(
+                controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
+                scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=scenario_llm),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=legal_llm),
+                controller_template_path=str(controller_template),
+                legal_template_path=str(legal_template),
+                scenario_template_root=scenario_root,
+            )
+
+            session = service.create_session("worker")
+            service.submit_turn(session.session_id, "我在拿到offer前被解雇了")
+            service.confirm_handoff(session.session_id, approve=True)
+            legal_turn = service.confirm_handoff(session.session_id, approve=True)
+            resumed_turn = service.submit_turn(session.session_id, "还能继续问吗")
+            summary = service.get_session_summary(session.session_id)
+
+        self.assertEqual(legal_turn.askmore, "no")
+        self.assertEqual(resumed_turn.active_agent, "LegalAnalysisAgent")
+        self.assertEqual(summary["stage"], "legal")
 
     def test_employer_direct_module_service(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -293,7 +395,7 @@ class SessionServiceTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -338,7 +440,7 @@ class SessionServiceTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -378,7 +480,7 @@ class SessionServiceTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -443,7 +545,7 @@ class SessionServiceTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -464,6 +566,64 @@ class SessionServiceTests(unittest.TestCase):
                 controller_llm.calls[1]["user_prompt"],
             )
             self.assertIn("补充信息", controller_llm.calls[1]["user_prompt"])
+
+    def test_forced_route_after_three_asks_renders_handoff_consistently(self):
+        controller_llm = FakeLLM(
+            [
+                (
+                    '{"askmore":"yes","ask":"还想继续追问",'
+                    '"user_input":"补充原文",'
+                    '"analysis":{'
+                    '"scene_id":"recruitment_probation",'
+                    '"confidence_level":"C2",'
+                    '"escalation_flags":"L1",'
+                    '"current_status":"信息基本足够",'
+                    '"user_appeal":"确认索赔路径",'
+                    '"faced_problems":"仍有少量细节待核实",'
+                    '"route_plan":"进入场景分析"}}'
+                )
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            controller_template = tmp / "ControllerAgent.md"
+            legal_template = tmp / "LegalAnalysisAgent.md"
+            scenario_root = tmp / "ScenarioAgents"
+            storage_root = tmp / "session_storage"
+            scenario_root.mkdir(parents=True, exist_ok=True)
+            (scenario_root / "recruitment_probation.md").write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            controller_template.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            legal_template.write_text(
+                "scene={Scenario_Agent_Input}\nhistory={Tool_Call_History}",
+                encoding="utf-8",
+            )
+
+            service = MultiAgentSessionService(
+                controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
+                scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
+                controller_template_path=str(controller_template),
+                legal_template_path=str(legal_template),
+                scenario_template_root=scenario_root,
+                storage_root=storage_root,
+            )
+            session = service.create_session("worker")
+            state = service.get_session(session.session_id)
+            state.controller_ask_count = 3
+            turn = service.submit_turn(session.session_id, "我补充完了")
+
+        self.assertEqual(turn.askmore, "no")
+        self.assertTrue(turn.requires_handoff_confirmation)
+        self.assertEqual(turn.pending_transition["to_agent"], "ScenarioAgent")
+        agent_messages = [m for m in turn.messages if m.speaker_type == "agent"]
+        self.assertEqual(agent_messages[0].display_blocks[0].title, "ControllerAgent 路由结果")
 
 
 if __name__ == "__main__":

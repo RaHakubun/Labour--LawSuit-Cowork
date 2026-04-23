@@ -3,7 +3,7 @@
   "role_id": "worker",
   "stage": "controller",
   "created_at_utc": "2026-04-11T07:15:07Z",
-  "updated_at_utc": "2026-04-11T07:20:35Z",
+  "updated_at_utc": "2026-04-13T08:14:28Z",
   "turn_id": 1,
   "scene_id": "",
   "scenario_template_path": "",
@@ -17,6 +17,8 @@
   "pending_payload": {},
   "inject_rejection_prefix_on_next_turn": false,
   "current_module_key": "",
+  "legal_report_markdown": "",
+  "legal_report_updated_at_utc": "",
   "messages": [
     {
       "session_id": "167f0bf93bcd452a92bb7e1a1964a2e4",
@@ -81,6 +83,7 @@
       }
     }
   ],
+  "cached_title": "www",
   "controller_conversation_messages": [
     [
       "User",

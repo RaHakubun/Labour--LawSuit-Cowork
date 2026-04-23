@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from Agents.agent import Agent
@@ -15,6 +16,20 @@ class FakeLLM:
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses[len(self.calls) - 1]
+
+
+class StreamingFakeLLM:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        on_token = kwargs.get("on_token")
+        if on_token is not None:
+            on_token("chunk-1")
+            on_token("chunk-2")
+        return self.response
 
 
 class AgentTests(unittest.TestCase):
@@ -134,6 +149,32 @@ class AgentTests(unittest.TestCase):
             self.assertIn('Agent: {"askmore":"yes","ask":"请继续补充"}', out)
             self.assertIn("User: 第二轮输入", out)
             self.assertIn('"askmore":"no"', out)
+
+    def test_run_turn_streaming_uses_injected_llm_callable(self):
+        fake_llm = StreamingFakeLLM('{"askmore":"yes","ask":"继续补充"}')
+        agent = Agent(main_prompt="base_system", llm_callable=fake_llm)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            template_path = Path(tmp_dir) / "controller.md"
+            template_path.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            streamed = []
+            callback = streamed.append
+            with patch(
+                "Agents.agent.llm_call.chat_completion_with_callback",
+                side_effect=AssertionError("global stream helper should not be used"),
+            ):
+                result = agent.run_turn(
+                    "第一轮输入",
+                    template_path=str(template_path),
+                    on_token=callback,
+                )
+
+        self.assertEqual(result.agent_reply, '{"askmore":"yes","ask":"继续补充"}')
+        self.assertEqual(streamed, ["chunk-1", "chunk-2"])
+        self.assertIs(fake_llm.calls[0]["on_token"], callback)
 
 
 if __name__ == "__main__":

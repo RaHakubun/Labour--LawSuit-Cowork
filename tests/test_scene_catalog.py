@@ -3,6 +3,7 @@ import unittest
 from Agents.scene_catalog import (
     ROLE_IDS,
     SCENE_IDS,
+    get_role_scene_template_path,
     get_scene_template_filename,
     list_module_scene_hints,
     list_role_modules,
@@ -29,6 +30,14 @@ class SceneCatalogTests(unittest.TestCase):
 
     def test_template_filename(self):
         self.assertEqual(get_scene_template_filename("work_injury"), "work_injury.md")
+        self.assertIn(
+            "新洪-用人单位侧-ScenarioAgents",
+            get_role_scene_template_path("employer", "rules_policy_effectiveness"),
+        )
+        self.assertIn(
+            "檬檬-律师侧 scenario agents",
+            get_role_scene_template_path("lawyer", "law_case_research"),
+        )
 
     def test_role_module_mapping(self):
         worker_modules = list_role_modules("worker")
@@ -48,4 +57,3 @@ class SceneCatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

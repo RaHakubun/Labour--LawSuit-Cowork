@@ -2,6 +2,7 @@ import io
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from Agents.scenario_agent import ScenarioAgent
@@ -15,6 +16,20 @@ class FakeLLM:
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses[len(self.calls) - 1]
+
+
+class StreamingFakeLLM:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        on_token = kwargs.get("on_token")
+        if on_token is not None:
+            on_token("chunk-a")
+            on_token("chunk-b")
+        return self.response
 
 
 class ScenarioAgentTests(unittest.TestCase):
@@ -222,6 +237,38 @@ class ScenarioAgentTests(unittest.TestCase):
         self.assertIn("mcp_query(\"检索司法案例-语义\"", execution.tool_call_history)
         self.assertIn("MCP 调用失败（已重试 3 次）", execution.tool_call_history)
         self.assertEqual(len(flaky_mcp.calls), 6)
+
+    def test_run_turn_streaming_uses_injected_llm_callable(self):
+        fake_llm = StreamingFakeLLM('{"askmore":"yes","ask":"请补充信息"}')
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            template_dir = Path(tmp_dir) / "Prompt_Template" / "ScenarioAgents"
+            template_dir.mkdir(parents=True, exist_ok=True)
+            template_path = template_dir / "demo.md"
+            template_path.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            agent = ScenarioAgent(
+                main_prompt="scenario_system",
+                llm_callable=fake_llm,
+                template_root=template_dir.resolve(),
+            )
+            streamed = []
+            callback = streamed.append
+            with patch(
+                "Agents.scenario_agent.llm_call.chat_completion_with_callback",
+                side_effect=AssertionError("global stream helper should not be used"),
+            ):
+                result = agent.run_turn(
+                    "第一轮",
+                    template_path=str(template_path),
+                    on_token=callback,
+                )
+
+        self.assertEqual(result.askmore, "yes")
+        self.assertEqual(streamed, ["chunk-a", "chunk-b"])
+        self.assertIs(fake_llm.calls[0]["on_token"], callback)
 
 
 if __name__ == "__main__":

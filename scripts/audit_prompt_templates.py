@@ -11,13 +11,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agents.scene_catalog import SCENE_IDS
+from Agents.scene_catalog import ROLE_SCENE_TEMPLATE_PATHS, SCENE_IDS
 
 
 SCENE_ENUM_RE = re.compile(
     r'"scene_id"\s*:\s*\{.*?"enum"\s*:\s*\[(?P<enum>.*?)\]',
     re.S,
 )
+SCENE_LITERAL_RE = re.compile(r'"scene_id"\s*:\s*"(?P<scene>[^"]+)"')
 STRING_RE = re.compile(r'"([^"]+)"')
 
 
@@ -32,20 +33,22 @@ class TemplateAuditResult:
 
 def _extract_scene_enum_values(text: str) -> tuple[str, ...]:
     match = SCENE_ENUM_RE.search(text)
-    if not match:
-        raise ValueError("scene_id enum definition not found")
-    raw = match.group("enum")
-    values = tuple(v.strip() for v in STRING_RE.findall(raw) if v.strip())
-    if not values:
-        raise ValueError("scene_id enum values empty")
-    return values
+    if match:
+        raw = match.group("enum")
+        values = tuple(v.strip() for v in STRING_RE.findall(raw) if v.strip())
+        if not values:
+            raise ValueError("scene_id enum values empty")
+        return values
 
-
-def _load_templates(root: Path) -> list[Path]:
-    scenario_dir = root / "Prompt_Template" / "ScenarioAgents"
-    if not scenario_dir.exists():
-        raise FileNotFoundError(f"scenario template dir not found: {scenario_dir}")
-    return sorted(scenario_dir.glob("*.md"))
+    # Some templates use fixed literal scene_id in sample JSON rather than enum schema.
+    literals: list[str] = []
+    for item in SCENE_LITERAL_RE.finditer(text):
+        scene = item.group("scene").strip()
+        if scene and scene not in literals:
+            literals.append(scene)
+    if literals:
+        return tuple(literals)
+    raise ValueError("scene_id enum/literal definition not found")
 
 
 def _audit_template(path: Path, expected_values: tuple[str, ...]) -> TemplateAuditResult:
@@ -109,7 +112,6 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    templates = _load_templates(root)
     controller_template = root / "Prompt_Template" / "ControllerAgent.md"
     if not controller_template.exists():
         raise FileNotFoundError(f"controller template not found: {controller_template}")
@@ -117,8 +119,23 @@ def main() -> int:
     results: list[TemplateAuditResult] = [
         _audit_template(controller_template, tuple(SCENE_IDS))
     ]
-    for path in templates:
-        results.append(_audit_template(path, (path.stem,)))
+    for role_id, scene_map in ROLE_SCENE_TEMPLATE_PATHS.items():
+        for scene_id, rel_path in sorted(scene_map.items()):
+            path = (root / rel_path).resolve()
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"scenario template not found for role_id={role_id}, scene_id={scene_id}: {path}"
+                )
+            item = _audit_template(path, (scene_id,))
+            results.append(
+                TemplateAuditResult(
+                    path=item.path,
+                    scene_hint=f"{role_id}:{scene_id}",
+                    expected_values=item.expected_values,
+                    enum_values=item.enum_values,
+                    is_match=item.is_match,
+                )
+            )
 
     report = _to_markdown(results)
     output_path = (root / args.output).resolve()

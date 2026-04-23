@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Any, Callable
 
@@ -63,6 +63,23 @@ def _last_day_of_month(year: int, month: int) -> int:
     else:
         next_month = date(year, month + 1, 1)
     return (next_month - date(year, month, 1)).days
+
+
+def _date_delta_one():
+    return timedelta(days=1)
+
+
+def _count_weekdays(start: date, end_exclusive: date) -> int:
+    """Count weekdays (Mon–Fri) in [start, end_exclusive)."""
+    if end_exclusive <= start:
+        return 0
+    total_days = (end_exclusive - start).days
+    full_weeks, remainder = divmod(total_days, 7)
+    count = full_weeks * 5
+    for i in range(remainder):
+        if (start + timedelta(days=i)).weekday() < 5:
+            count += 1
+    return count
 
 
 def _add_months(dt: date, months: int) -> date:
@@ -297,10 +314,21 @@ class LabourCalculatorEngine:
             end_date = _parse_date(payload.get("end_date"), "end_date")
             raw_n = _service_n_from_dates(start_date, end_date)
 
-        capped_n = min(raw_n, Decimal("12"))
+        capped_n = raw_n
         local_avg = _must_non_negative(record.avg_wage, "local_avg_monthly_wage")
         wage_cap = local_avg * Decimal("3")
-        wage_base = min(monthly_avg_wage_12m, wage_cap)
+        wage_exceeds_3x = monthly_avg_wage_12m > wage_cap
+
+        if wage_exceeds_3x:
+            # 工资超过社平3倍：计算基数封顶，N也封顶12个月
+            wage_base = wage_cap
+            capped_n = min(raw_n, Decimal("12"))
+            n_capped = True
+        else:
+            # 工资不超过社平3倍：不封顶N，工资基数用实际工资
+            wage_base = monthly_avg_wage_12m
+            capped_n = raw_n
+            n_capped = False
 
         mode = str(payload.get("mode", "")).strip().lower()
         if not mode:
@@ -326,13 +354,18 @@ class LabourCalculatorEngine:
             rule = "severance_2n"
 
         total = wage_base * payable_months
-        rules = [rule, "severance_n_cap_12", "severance_wage_cap_3x_local_avg"]
+        rules = [rule]
+        if n_capped:
+            rules.append("severance_n_cap_12")
+        if wage_exceeds_3x:
+            rules.append("severance_wage_cap_3x_local_avg")
 
         return {
             "result": {"severance_amount": _d2f(total)},
             "breakdown": {
                 "raw_n": float(raw_n),
                 "capped_n": float(capped_n),
+                "n_capped": n_capped,
                 "payable_months": float(payable_months),
                 "wage_base": _d2f(wage_base),
                 "monthly_avg_wage_12m": _d2f(monthly_avg_wage_12m),
@@ -473,45 +506,74 @@ class LabourCalculatorEngine:
             "monthly_wage",
         )
 
+        # 双倍工资从入职满1个月的次日起算，最长不超过11个月（即满12个月止）
         unsigned_start_date = _add_months(entry_date, 1)
-        if unsigned_end_date <= unsigned_start_date:
+        # 法定最长截止到入职满12个月之前一天；这里用不含端边界表达
+        legal_max_end_exclusive = _add_months(entry_date, 12)
+        # unsigned_end_date 为含端日期，转成不含端的 calc_end_date
+        calc_end_date = min(unsigned_end_date + timedelta(days=1), legal_max_end_exclusive)
+
+        if calc_end_date <= unsigned_start_date:
             return {
                 "result": {"double_wage_gap": 0.0},
                 "breakdown": {
                     "unsigned_start_date": unsigned_start_date.isoformat(),
                     "unsigned_end_date": unsigned_end_date.isoformat(),
-                    "effective_months": 0.0,
-                    "compensable_months": 0.0,
-                    "remaining_days": 0,
+                    "calc_end_date": (calc_end_date - timedelta(days=1)).isoformat(),
+                    "segments": [],
+                    "monthly_wage": _d2f(monthly_wage),
                 },
                 "inputs": payload,
                 "rules_applied": ["double_wage_no_effective_period"],
             }
 
-        full_months, remaining_days = _months_and_remaining_days(unsigned_start_date, unsigned_end_date)
-        effective_months = Decimal(full_months) + (Decimal(remaining_days) / MONTHLY_WORK_DAYS)
+        # 按自然月分段计算：
+        # 完整月（从月初到月末）按整月工资计；
+        # 不满月按实际工作日（周一到周五）÷ 21.75 × 月工资 计算
+        segments = []
+        total_amount = Decimal("0")
+        cursor = unsigned_start_date
 
-        if effective_months < 1:
-            compensable_months = effective_months
-            rules = ["double_wage_sub_one_month_by_days"]
-        elif effective_months < 12:
-            compensable_months = max(effective_months - Decimal("1"), Decimal(0))
-            rules = ["double_wage_under_12_months_minus_1"]
-        else:
-            compensable_months = Decimal("11")
-            rules = ["double_wage_cap_11_months"]
+        while cursor < calc_end_date:
+            # 本月下月1日（不含端）
+            if cursor.month == 12:
+                month_end = date(cursor.year + 1, 1, 1)
+            else:
+                month_end = date(cursor.year, cursor.month + 1, 1)
 
-        amount = monthly_wage * compensable_months
+            seg_end = min(calc_end_date, month_end)
+            month_start = date(cursor.year, cursor.month, 1)
+
+            if cursor == month_start and seg_end == month_end:
+                # 完整月
+                seg_amount = monthly_wage
+                seg_weekdays = None
+            else:
+                # 不满月：按实际工作日
+                seg_weekdays = _count_weekdays(cursor, seg_end)
+                seg_amount = monthly_wage / MONTHLY_PAID_DAYS * Decimal(str(seg_weekdays))
+
+            total_amount += seg_amount
+            segments.append({
+                "from": cursor.isoformat(),
+                "to": (seg_end - timedelta(days=1)).isoformat(),
+                "weekdays": seg_weekdays,
+                "amount": _d2f(seg_amount),
+                "is_full_month": seg_weekdays is None,
+            })
+            cursor = seg_end
+
+        rules = ["double_wage_weekdays_div_21_75", "double_wage_cap_11_months"]
+
         return {
-            "result": {"double_wage_gap": _d2f(amount)},
+            "result": {"double_wage_gap": _d2f(total_amount)},
             "breakdown": {
                 "unsigned_start_date": unsigned_start_date.isoformat(),
                 "unsigned_end_date": unsigned_end_date.isoformat(),
-                "full_natural_months": full_months,
-                "remaining_days": remaining_days,
-                "effective_months": float(_qy(effective_months)),
-                "compensable_months": float(_qy(compensable_months)),
+                "calc_end_date": (calc_end_date - timedelta(days=1)).isoformat(),
                 "monthly_wage": _d2f(monthly_wage),
+                "monthly_paid_days": float(MONTHLY_PAID_DAYS),
+                "segments": segments,
             },
             "inputs": payload,
             "rules_applied": rules,

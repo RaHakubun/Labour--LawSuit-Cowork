@@ -83,9 +83,12 @@ class ScenarioAgent:
             else:
                 resolved = cwd_candidate
 
-        if template_root not in resolved.parents and resolved != template_root:
+        project_root = PROJECT_ROOT.resolve()
+        in_template_root = template_root in resolved.parents or resolved == template_root
+        in_project_root = project_root in resolved.parents or resolved == project_root
+        if not in_template_root and not in_project_root:
             raise ValueError(
-                f"Template path must be under {template_root}. Got: {resolved}"
+                f"Template path must be under {template_root} or {project_root}. Got: {resolved}"
             )
         if not resolved.exists():
             raise FileNotFoundError(f"Template not found: {resolved}")
@@ -297,6 +300,7 @@ class ScenarioAgent:
         user_input: str,
         template_path: str,
         attachments_meta: Optional[Any] = None,
+        on_token: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> ScenarioTurnResult:
         self._append_message("User", user_input)
@@ -307,10 +311,12 @@ class ScenarioAgent:
             attachments_meta=attachments_meta,
         )
         system_prompt = self.main_prompt if self.main_prompt.strip() else None
-        agent_reply = self.llm_callable(
+        agent_reply = llm_call.invoke_llm(
+            self.llm_callable,
             user_prompt=injected_prompt,
             system_prompt=system_prompt,
             model=self.model,
+            on_token=on_token,
             **kwargs,
         )
         self._append_message("Agent", agent_reply)

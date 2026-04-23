@@ -59,7 +59,7 @@ class ApiServerTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -121,7 +121,7 @@ class ApiServerTests(unittest.TestCase):
             ]
         )
         legal_llm = FakeLLM(
-            ['{"askmore":"no","analysis":"# 结论\\n可主张缔约过失及合理损失。"}']
+            ['{"askmore":"no","analysis":"# 结论\\n可主张缔约过失及合理损失。","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}']
         )
         fake_mcp = FakeMCP()
 
@@ -203,7 +203,7 @@ class ApiServerTests(unittest.TestCase):
 
             summary_resp = client.get(f"/api/v1/sessions/{session_id}")
             self.assertEqual(summary_resp.status_code, 200)
-            self.assertEqual(summary_resp.json()["stage"], "done")
+            self.assertEqual(summary_resp.json()["stage"], "legal")
 
     def test_404_when_session_not_found(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -248,7 +248,7 @@ class ApiServerTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,
@@ -298,7 +298,7 @@ class ApiServerTests(unittest.TestCase):
             service = MultiAgentSessionService(
                 controller_factory=lambda: Agent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
                 scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
-                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
                 controller_template_path=str(controller_template),
                 legal_template_path=str(legal_template),
                 scenario_template_root=scenario_root,

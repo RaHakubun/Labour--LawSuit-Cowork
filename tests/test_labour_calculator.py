@@ -175,9 +175,11 @@ class LabourCalculatorEngineTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["breakdown"]["full_natural_months"], 0)
-        self.assertEqual(result["breakdown"]["remaining_days"], 9)
-        self.assertAlmostEqual(result["result"]["double_wage_gap"], 4354.14, places=2)
+        self.assertEqual(result["breakdown"]["unsigned_start_date"], "2026-02-01")
+        self.assertEqual(result["breakdown"]["calc_end_date"], "2026-02-10")
+        self.assertEqual(len(result["breakdown"]["segments"]), 1)
+        self.assertEqual(result["breakdown"]["segments"][0]["weekdays"], 7)
+        self.assertAlmostEqual(result["result"]["double_wage_gap"], 3218.39, places=2)
 
     def test_calculate_double_wage_under_12_months(self):
         result = self.engine.calculate(
@@ -189,8 +191,10 @@ class LabourCalculatorEngineTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["breakdown"]["full_natural_months"], 3)
-        self.assertEqual(result["result"]["double_wage_gap"], 20000.0)
+        self.assertEqual(len(result["breakdown"]["segments"]), 4)
+        self.assertTrue(result["breakdown"]["segments"][0]["is_full_month"])
+        self.assertEqual(result["breakdown"]["segments"][-1]["weekdays"], 1)
+        self.assertAlmostEqual(result["result"]["double_wage_gap"], 30459.77, places=2)
 
     def test_calculate_double_wage_cap_11_months(self):
         result = self.engine.calculate(
@@ -202,6 +206,8 @@ class LabourCalculatorEngineTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["ok"])
+        self.assertEqual(result["breakdown"]["calc_end_date"], "2025-12-31")
+        self.assertEqual(len(result["breakdown"]["segments"]), 11)
         self.assertEqual(result["result"]["double_wage_gap"], 110000.0)
 
     def test_unknown_calc_type(self):

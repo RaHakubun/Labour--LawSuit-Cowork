@@ -93,6 +93,7 @@ class Agent:
         user_input: str,
         template_path: str = "Prompt_Template/ControllerAgent.md",
         attachments_meta: Optional[Any] = None,
+        on_token: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> TurnResult:
         self._append_message("User", user_input)
@@ -103,10 +104,12 @@ class Agent:
             attachments_meta=attachments_meta,
         )
         system_prompt = self.main_prompt if self.main_prompt.strip() else None
-        agent_reply = self.llm_callable(
+        agent_reply = llm_call.invoke_llm(
+            self.llm_callable,
             user_prompt=injected_prompt,
             system_prompt=system_prompt,
             model=self.model,
+            on_token=on_token,
             **kwargs,
         )
         self._append_message("Agent", agent_reply)

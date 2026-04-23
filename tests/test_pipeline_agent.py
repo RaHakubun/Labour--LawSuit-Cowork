@@ -42,7 +42,7 @@ class PipelineAgentTests(unittest.TestCase):
         )
         legal_llm = FakeLLM(
             [
-                '{"askmore":"no","analysis":"最终法律分析"}',
+                '{"askmore":"no","analysis":"最终法律分析","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}',
             ]
         )
         scenario_mcp = FakeMCP()
@@ -137,7 +137,7 @@ class PipelineAgentTests(unittest.TestCase):
         )
         legal_llm = FakeLLM(
             [
-                '{"askmore":"no","analysis":"最终法律分析"}',
+                '{"askmore":"no","analysis":"最终法律分析","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}',
             ]
         )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -24,7 +25,9 @@ from .presentation_adapter import (
     adapt_tool_history_text,
     build_handoff_block,
 )
+from .llm_call import chat_completion
 from .scene_catalog import (
+    get_role_scene_template_path,
     get_scene_template_filename,
     list_module_scene_hints,
     list_role_modules,
@@ -39,25 +42,65 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER_TEMPLATE_DEFAULT = str(PROJECT_ROOT / "Prompt_Template/ControllerAgent.md")
 LEGAL_TEMPLATE_DEFAULT = str(PROJECT_ROOT / LEGAL_ANALYSIS_TEMPLATE_DEFAULT)
 SESSION_STORAGE_DEFAULT = PROJECT_ROOT / "storage" / "sessions"
+LEGACY_SCENARIO_TEMPLATE_ROOT = Path(SCENARIO_TEMPLATE_ROOT).resolve()
 REJECTED_TERMINATION_PREFIX = (
     "用户拒绝了本次Agent的终止，也许是还有需要澄清的地方，这次的输入如下："
 )
 
 
+_SCENE_DISPLAY_NAMES: dict[str, str] = {
+    "recruitment_probation":      "招聘入职Agent",
+    "adjustment_transfer":        "调岗调薪Agent",
+    "performance_discipline":     "绩效违纪Agent",
+    "salary_overtime_social":     "薪资社保Agent",
+    "leave_medical_period":       "假期医疗Agent",
+    "female_protection":          "女职工保护Agent",
+    "work_injury":                "工伤认定Agent",
+    "termination_layoff":         "离职裁员Agent",
+    "noncompete_confidentiality": "竞业保密Agent",
+    "dispute_arbitration":        "争议仲裁Agent",
+    "rules_policy_effectiveness": "制度效力Agent",
+    "flexible_employment_relationship": "灵活用工Agent",
+    "flexible_platform_employment": "平台用工Agent",
+    "law_case_research": "法研检索Agent",
+    "legal_qa_proxy": "律师问答代理Agent",
+    "evidence_doc_generator": "证据文书Agent",
+}
+
+
+def _scenario_display_name(scene_id: str) -> str:
+    return _SCENE_DISPLAY_NAMES.get((scene_id or "").strip(), "场景分析Agent")
+
+
 def _strict_json_object(text: str) -> dict[str, Any]:
-    payload = json.loads(text)
+    if not text or not text.strip():
+        raise ValueError("agent returned empty response — LLM may be overloaded, please retry")
+    # Try to extract JSON from text that may contain markdown fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        cleaned = "\n".join(lines).strip()
+    if "{" in cleaned:
+        start = cleaned.index("{")
+        end = cleaned.rindex("}") + 1
+        cleaned = cleaned[start:end]
+    payload = json.loads(cleaned)
     if not isinstance(payload, dict):
         raise ValueError("agent output must be a JSON object")
     return payload
 
 
-def _extract_askmore(payload: dict[str, Any]) -> str:
+def _extract_askmore(payload: dict[str, Any], *, allowed: set[str] | None = None) -> str:
+    valid_values = allowed or {"yes", "no"}
     value = payload.get("askmore")
     if not isinstance(value, str):
-        raise ValueError('payload.askmore must be a string "yes" or "no"')
+        allowed_text = " | ".join(sorted(valid_values))
+        raise ValueError(f'payload.askmore must be a string in [{allowed_text}]')
     normalized = value.strip().lower()
-    if normalized not in {"yes", "no"}:
-        raise ValueError('payload.askmore must be "yes" or "no"')
+    if normalized not in valid_values:
+        allowed_text = " | ".join(sorted(valid_values))
+        raise ValueError(f'payload.askmore must be in [{allowed_text}]')
     return normalized
 
 
@@ -158,19 +201,25 @@ class SessionState:
     pending_payload: dict[str, Any] = field(default_factory=dict)
     inject_rejection_prefix_on_next_turn: bool = False
     current_module_key: str = ""
+    controller_ask_count: int = 0  # number of times ControllerAgent has replied with askmore=yes
+    legal_report_markdown: str = ""
+    legal_report_updated_at_utc: str = ""
     messages: list[Any] = field(default_factory=list)
     handoffs: list[HandoffPayload] = field(default_factory=list)
     event_log: list[dict[str, Any]] = field(default_factory=list)
+    cached_title: str = ""
 
 
 @dataclass
 class MultiAgentSessionService:
-    controller_factory: Callable[[], Agent] = field(default_factory=lambda: (lambda: Agent(main_prompt="")))
+    controller_factory: Callable[[], Agent] = field(
+        default_factory=lambda: (lambda: Agent(main_prompt="", model="gemini-3-flash-preview-cli"))
+    )
     scenario_factory: Callable[[], ScenarioAgent] = field(
-        default_factory=lambda: (lambda: ScenarioAgent(main_prompt=""))
+        default_factory=lambda: (lambda: ScenarioAgent(main_prompt="", model="gemini-3-flash-preview-cli"))
     )
     legal_factory: Callable[[], LegalAnalysisAgent] = field(
-        default_factory=lambda: (lambda: LegalAnalysisAgent(main_prompt=""))
+        default_factory=lambda: (lambda: LegalAnalysisAgent(main_prompt="", model="gemini-3.1-pro-preview-cli"))
     )
     controller_template_path: str = CONTROLLER_TEMPLATE_DEFAULT
     legal_template_path: str = LEGAL_TEMPLATE_DEFAULT
@@ -209,9 +258,13 @@ class MultiAgentSessionService:
             "pending_payload": state.pending_payload,
             "inject_rejection_prefix_on_next_turn": state.inject_rejection_prefix_on_next_turn,
             "current_module_key": state.current_module_key,
+            "controller_ask_count": state.controller_ask_count,
+            "legal_report_markdown": state.legal_report_markdown,
+            "legal_report_updated_at_utc": state.legal_report_updated_at_utc,
             "messages": [message.to_dict() for message in state.messages],
             "handoffs": [handoff.to_dict() for handoff in state.handoffs],
             "event_log": [dict(item) for item in state.event_log],
+            "cached_title": state.cached_title,
             "controller_conversation_messages": [
                 [str(role), str(content)]
                 for role, content in state.controller_agent.conversation_messages
@@ -261,27 +314,42 @@ class MultiAgentSessionService:
             messages = [_message_from_dict(item) for item in raw_messages if isinstance(item, dict)]
             handoffs = [_handoff_from_dict(item) for item in raw_handoffs if isinstance(item, dict)]
 
+            # Resolve template paths, falling back to current defaults when
+            # the stored path no longer exists (e.g. session from another
+            # machine, old project copy, or expired temp directory).
+            _stored_ctrl_tpl = str(
+                snapshot.get("controller_template_path", self.controller_template_path)
+            )
+            if not Path(_stored_ctrl_tpl).exists():
+                _stored_ctrl_tpl = self.controller_template_path
+            _stored_legal_tpl = str(
+                snapshot.get("legal_template_path", self.legal_template_path)
+            )
+            if not Path(_stored_legal_tpl).exists():
+                _stored_legal_tpl = self.legal_template_path
+            _stored_scene_root = Path(
+                str(snapshot.get("scenario_template_root", self.scenario_template_root))
+            ).resolve()
+            if not _stored_scene_root.is_dir():
+                _stored_scene_root = self.scenario_template_root.resolve()
+
             state = SessionState(
                 session_id=session_id,
                 role_id=role_id,
                 controller_agent=controller_agent,
                 scenario_agent=scenario_agent,
                 legal_analysis_agent=legal_agent,
-                controller_template_path=str(
-                    snapshot.get("controller_template_path", self.controller_template_path)
-                ),
-                legal_template_path=str(
-                    snapshot.get("legal_template_path", self.legal_template_path)
-                ),
-                scenario_template_root=Path(
-                    str(snapshot.get("scenario_template_root", self.scenario_template_root))
-                ).resolve(),
+                controller_template_path=_stored_ctrl_tpl,
+                legal_template_path=_stored_legal_tpl,
+                scenario_template_root=_stored_scene_root,
                 stage=str(snapshot.get("stage", "controller")),
                 created_at_utc=str(snapshot.get("created_at_utc", now_utc_iso())),
                 updated_at_utc=str(snapshot.get("updated_at_utc", now_utc_iso())),
                 turn_id=int(snapshot.get("turn_id", 0)),
                 scene_id=str(snapshot.get("scene_id", "")),
-                scenario_template_path=str(snapshot.get("scenario_template_path", "")),
+                scenario_template_path=str(snapshot.get("scenario_template_path", ""))
+                    if Path(str(snapshot.get("scenario_template_path", ""))).exists()
+                    else "",
                 scenario_output=snapshot.get("scenario_output"),
                 scenario_tool_history=str(snapshot.get("scenario_tool_history", "")),
                 pending_transition=snapshot.get("pending_transition"),
@@ -291,6 +359,10 @@ class MultiAgentSessionService:
                     snapshot.get("inject_rejection_prefix_on_next_turn", False)
                 ),
                 current_module_key=str(snapshot.get("current_module_key", "")),
+                controller_ask_count=int(snapshot.get("controller_ask_count", 0)),
+                cached_title=str(snapshot.get("cached_title", "")),
+                legal_report_markdown=str(snapshot.get("legal_report_markdown", "")),
+                legal_report_updated_at_utc=str(snapshot.get("legal_report_updated_at_utc", "")),
                 messages=messages,
                 handoffs=handoffs,
                 event_log=[
@@ -331,24 +403,65 @@ class MultiAgentSessionService:
     def _public_pending_transition(self, state: SessionState) -> dict[str, Any] | None:
         if not isinstance(state.pending_transition, dict):
             return None
-        return {
-            "from_agent": str(state.pending_transition.get("from_agent", "")),
-            "to_agent": str(state.pending_transition.get("to_agent", "")),
-            "reason": str(state.pending_transition.get("reason", "")),
-            "scene_id": str(state.pending_transition.get("scene_id", "")),
-            "trigger_turn_id": int(state.pending_transition.get("trigger_turn_id", state.turn_id)),
-            "proposed_at": str(state.pending_transition.get("proposed_at", "")),
+        pt = state.pending_transition
+        result: dict[str, Any] = {
+            "from_agent": str(pt.get("from_agent", "")),
+            "to_agent": str(pt.get("to_agent", "")),
+            "reason": str(pt.get("reason", "")),
+            "scene_id": str(pt.get("scene_id", "")),
+            "trigger_turn_id": int(pt.get("trigger_turn_id", state.turn_id)),
+            "proposed_at": str(pt.get("proposed_at", "")),
         }
+        # Forward analysis summary fields if present
+        for key in ("current_status", "user_appeal", "faced_problems", "user_input"):
+            if key in pt:
+                result[key] = str(pt[key])
+        return result
 
-    def _derive_session_title(self, state: SessionState) -> str:
+    def _derive_session_title(self, state: SessionState, use_llm: bool = True) -> str:
+        if state.cached_title:
+            return state.cached_title
+
+        user_texts: list[str] = []
+        ai_texts: list[str] = []
         for message in state.messages:
-            if getattr(message, "speaker_type", "") != "user":
-                continue
+            speaker = getattr(message, "speaker_type", "")
             for block in list(getattr(message, "display_blocks", []) or []):
                 text = str(getattr(block, "text", "")).strip()
-                if text:
-                    return text[:30]
-        return "新会话"
+                if not text:
+                    continue
+                # strip module selection prefix
+                text = re.sub(r"^【[^】]*】\s*\S+\s*", "", text).strip()
+                if not text:
+                    continue
+                if speaker == "user":
+                    user_texts.append(text)
+                elif speaker == "agent":
+                    ai_texts.append(text)
+        if not user_texts and not ai_texts:
+            return "新会话"
+
+        if not use_llm:
+            return (user_texts[0] if user_texts else ai_texts[0])[:20]
+
+        combined = "\n".join(user_texts[:3])[:300]
+        if ai_texts:
+            combined += "\n---AI回复---\n" + "\n".join(ai_texts[:2])[:300]
+
+        try:
+            title = chat_completion(
+                user_prompt=f"请用8-15个字概括以下劳动法咨询对话的核心内容，只输出概括文字，不要加标点：\n{combined}",
+            ).strip().strip("\"'""''。，、：:")[:20]
+            if title:
+                state.cached_title = title
+                self._persist_state(state)
+                return title
+        except Exception:
+            pass
+        fallback = (user_texts[0] if user_texts else ai_texts[0])[:20]
+        state.cached_title = fallback
+        self._persist_state(state)
+        return fallback
 
     def _build_event(
         self,
@@ -464,11 +577,26 @@ class MultiAgentSessionService:
 
     def _resolve_scenario_template(self, state: SessionState, scene_id: str) -> str:
         scene = validate_scene_id(scene_id)
+        # Prefer role-based mapping only when session uses default legacy root.
+        # Custom roots in tests/sandboxes should stay isolated.
+        if state.scenario_template_root == LEGACY_SCENARIO_TEMPLATE_ROOT:
+            mapped_relative = get_role_scene_template_path(state.role_id, scene)
+            mapped_path = (PROJECT_ROOT / mapped_relative).resolve()
+            if mapped_path.exists():
+                return str(mapped_path)
+        else:
+            mapped_path = Path("")
+
+        # Backward compatibility: fallback to legacy ScenarioAgents root layout.
         filename = get_scene_template_filename(scene)
-        path = (state.scenario_template_root / filename).resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"scenario template not found: {path}")
-        return str(path)
+        legacy_path = (state.scenario_template_root / filename).resolve()
+        if legacy_path.exists():
+            return str(legacy_path)
+
+        raise FileNotFoundError(
+            f"scenario template not found for role_id={state.role_id}, "
+            f"scene_id={scene}. mapped={mapped_path}, legacy={legacy_path}"
+        )
 
     def _append_user_message(
         self,
@@ -573,17 +701,22 @@ class MultiAgentSessionService:
         reason: str,
         scene_id: str,
         event_collector: list[dict[str, Any]],
+        analysis_summary: dict[str, str] | None = None,
     ) -> ConversationMessagePayload:
+        metadata: dict[str, str] = {
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "scene_id": scene_id,
+            "reason": reason,
+        }
+        if analysis_summary:
+            for k, v in analysis_summary.items():
+                metadata[k] = str(v)
         block = DisplayBlock(
             kind="handoff_request",
             title="等待用户确认移交",
             text=f"{from_agent} 已完成当前阶段，建议移交给 {to_agent}。请确认是否继续。",
-            metadata={
-                "from_agent": from_agent,
-                "to_agent": to_agent,
-                "scene_id": scene_id,
-                "reason": reason,
-            },
+            metadata=metadata,
         )
         return self._append_agent_blocks(state, from_agent, [block], event_collector)
 
@@ -598,6 +731,7 @@ class MultiAgentSessionService:
         pending_stage: str,
         pending_payload: dict[str, Any],
         event_collector: list[dict[str, Any]],
+        analysis_summary: dict[str, str] | None = None,
     ) -> None:
         state.pending_transition = {
             "from_agent": from_agent,
@@ -606,6 +740,7 @@ class MultiAgentSessionService:
             "scene_id": scene_id,
             "trigger_turn_id": state.turn_id,
             "proposed_at": now_utc_iso(),
+            **(analysis_summary or {}),
         }
         state.pending_stage = pending_stage
         state.pending_payload = dict(pending_payload)
@@ -628,6 +763,38 @@ class MultiAgentSessionService:
         state.pending_stage = ""
         state.pending_payload = {}
         self._persist_state(state)
+
+    UPLOAD_DIR = Path(__file__).resolve().parent.parent / "storage" / "uploads"
+
+    def _append_file_contents(self, text: str, attachments_meta: Any | None) -> str:
+        if not isinstance(attachments_meta, dict):
+            return text
+        files = attachments_meta.get("files")
+        if not isinstance(files, list) or not files:
+            return text
+        parts = [text]
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            file_id = str(item.get("file_id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not file_id or not name:
+                continue
+            safe_name = f"{file_id}_{name}"
+            path = self.UPLOAD_DIR / safe_name
+            if not path.is_file():
+                parts.append(f"\n\n[附件: {name}]（文件未找到）")
+                continue
+            ext = Path(name).suffix.lower()
+            if ext in {".txt", ".csv", ".md"}:
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")[:30000]
+                    parts.append(f"\n\n--- 附件: {name} ---\n{content}\n--- 附件结束 ---")
+                except Exception:
+                    parts.append(f"\n\n[附件: {name}]（读取失败）")
+            else:
+                parts.append(f"\n\n[附件: {name}]（{ext} 格式文件已上传，请基于文件名和用户描述进行分析）")
+        return "".join(parts)
 
     def _decorate_user_input_after_reject(
         self,
@@ -652,6 +819,44 @@ class MultiAgentSessionService:
         self._persist_state(state)
         return merged
 
+    def _build_legal_tool_call_history(self, state: SessionState, *, limit_chars: int = 12000) -> str:
+        lines: list[str] = []
+
+        for message in state.messages:
+            speaker_type = str(getattr(message, "speaker_type", "")).strip()
+            speaker_agent = str(getattr(message, "speaker_agent", "")).strip()
+            created_at = str(getattr(message, "created_at_utc", "")).strip()
+            speaker = "User" if speaker_type == "user" else (speaker_agent or "Agent")
+            lines.append(f"[{created_at}] {speaker}:")
+            for block in list(getattr(message, "display_blocks", []) or []):
+                kind = str(getattr(block, "kind", "")).strip()
+                title = str(getattr(block, "title", "")).strip()
+                text = str(getattr(block, "text", "")).strip()
+                items = [str(i).strip() for i in list(getattr(block, "items", []) or []) if str(i).strip()]
+                if title:
+                    lines.append(f"- {kind or 'block'}: {title}")
+                if text:
+                    lines.append(text)
+                if items:
+                    lines.extend([f"* {item}" for item in items])
+            lines.append("")
+
+        for event in state.event_log:
+            event_type = str(event.get("event_type", "")).strip()
+            if event_type not in {"report_generation_requested", "report_generated"}:
+                continue
+            created_at = str(event.get("created_at_utc", "")).strip()
+            payload = dict(event.get("payload", {}) or {})
+            payload_text = json.dumps(payload, ensure_ascii=False)
+            lines.append(f"[{created_at}] EVENT {event_type}: {payload_text}")
+
+        history_text = "\n".join(lines).strip()
+        if not history_text:
+            return ""
+        if len(history_text) <= limit_chars:
+            return history_text
+        return "[History Truncated]\n" + history_text[-limit_chars:]
+
     def _run_scenario_phase(
         self,
         state: SessionState,
@@ -661,18 +866,25 @@ class MultiAgentSessionService:
         new_messages: list[ConversationMessagePayload],
         new_handoffs: list[HandoffPayload],
         new_events: list[dict[str, Any]],
+        on_token: Any | None = None,
     ) -> SessionTurnResponse:
+        # Re-resolve template if stored path is missing (e.g. restored from
+        # another machine or expired temp dir).
+        if not state.scenario_template_path or not Path(state.scenario_template_path).exists():
+            state.scenario_template_path = self._resolve_scenario_template(state, state.scene_id)
         scenario_turn = state.scenario_agent.run_turn(
             user_input=text,
             template_path=state.scenario_template_path,
             attachments_meta=scenario_attachments,
+            on_token=on_token,
         )
         scenario_payload = _strict_json_object(scenario_turn.agent_reply)
         scenario_askmore = _extract_askmore(scenario_payload)
 
-        scenario_blocks = adapt_payload_by_agent("ScenarioAgent", scenario_payload)
+        scenario_blocks = adapt_payload_by_agent("ScenarioAgent", scenario_payload, scene_id=state.scene_id)
+        scenario_display_name = _scenario_display_name(state.scene_id)
         new_messages.append(
-            self._append_agent_blocks(state, "ScenarioAgent", scenario_blocks, new_events)
+            self._append_agent_blocks(state, scenario_display_name, scenario_blocks, new_events)
         )
 
         if scenario_askmore == "yes":
@@ -805,33 +1017,60 @@ class MultiAgentSessionService:
         new_messages: list[ConversationMessagePayload],
         new_handoffs: list[HandoffPayload],
         new_events: list[dict[str, Any]],
+        on_token: Any | None = None,
+        user_followup: str = "",
     ) -> SessionTurnResponse:
         if not isinstance(state.scenario_output, dict):
             raise ValueError("legal stage requires scenario_output")
 
         scenario_agent_input = json.dumps(state.scenario_output, ensure_ascii=False, indent=2)
+        # When the user provides follow-up answers (e.g. after seeing the
+        # initial legal report), append them so the LLM can incorporate the
+        # new facts into an updated report.
+        if user_followup:
+            scenario_agent_input += (
+                "\n\n--- 用户补充信息 ---\n" + user_followup
+            )
+        legal_history = self._build_legal_tool_call_history(state)
         legal_result = state.legal_analysis_agent.run_until_done(
             scenario_agent_input=scenario_agent_input,
             template_path=state.legal_template_path,
-            initial_tool_call_history=state.scenario_tool_history,
+            initial_tool_call_history=legal_history,
             max_rounds=self.legal_max_rounds,
+            on_token=on_token,
         )
         final_output = legal_result.get("final_output")
         if not isinstance(final_output, dict):
             raise ValueError("legal_result.final_output must be object")
-        legal_askmore = _extract_askmore(final_output)
-        if legal_askmore != "no":
-            raise ValueError("legal final output askmore must be no")
+        legal_askmore = _extract_askmore(final_output, allowed={"yes", "no", "end"})
 
         legal_blocks = adapt_payload_by_agent("LegalAnalysisAgent", final_output)
-        new_messages.append(self._append_agent_blocks(state, "LegalAnalysisAgent", legal_blocks, new_events))
-        legal_tool_history = str(legal_result.get("tool_call_history", "")).strip()
-        legal_tool_blocks = adapt_tool_history_text(legal_tool_history)
-        if legal_tool_blocks:
-            new_messages.append(
-                self._append_agent_blocks(state, "LegalAnalysisAgent", legal_tool_blocks, new_events)
+        if legal_blocks:
+            new_messages.append(self._append_agent_blocks(state, "LegalAnalysisAgent", legal_blocks, new_events))
+
+        legal_markdown = str(final_output.get("analysis", "")).strip()
+        if legal_markdown:
+            report_ts = now_utc_iso()
+            state.legal_report_markdown = legal_markdown
+            state.legal_report_updated_at_utc = report_ts
+            self._append_event(
+                state,
+                "report_generated",
+                {
+                    "source": "legal_agent_output",
+                    "length": len(legal_markdown),
+                    "updated_at_utc": report_ts,
+                },
+                new_events,
             )
-        if legal_tool_history:
+
+        legal_tool_history = str(legal_result.get("tool_call_history", "")).strip()
+        if legal_tool_history and legal_tool_history != legal_history:
+            legal_tool_blocks = adapt_tool_history_text(legal_tool_history)
+            if legal_tool_blocks:
+                new_messages.append(
+                    self._append_agent_blocks(state, "LegalAnalysisAgent", legal_tool_blocks, new_events)
+                )
             self._append_event(
                 state,
                 "tool_call_finished",
@@ -846,12 +1085,25 @@ class MultiAgentSessionService:
                 new_events,
             )
 
-        state.stage = "done"
+        if legal_askmore == "end":
+            end_hint = DisplayBlock(
+                kind="agent_message",
+                title="会话已结束",
+                text="当前阶段已完成。如果你还想继续追问，可直接在本会话继续提问。",
+            )
+            new_messages.append(
+                self._append_agent_blocks(state, "LegalAnalysisAgent", [end_hint], new_events)
+            )
+            state.stage = "done"
+            response_askmore = "no"
+        else:
+            state.stage = "legal"
+            response_askmore = legal_askmore
         self._persist_state(state)
         return self._response(
             state,
             active_agent="LegalAnalysisAgent",
-            askmore="no",
+            askmore=response_askmore,
             messages=new_messages,
             handoffs=new_handoffs,
             events=new_events,
@@ -862,17 +1114,27 @@ class MultiAgentSessionService:
         session_id: str,
         user_input: str,
         attachments_meta: Any | None = None,
+        on_token: Any | None = None,
     ) -> SessionTurnResponse:
         state = self.get_session(session_id)
+        new_events: list[dict[str, Any]] = []
         if state.stage == "done":
-            raise ValueError("session already completed; start a new session")
+            # Continue in the same session after completion.
+            if state.legal_report_markdown.strip() or isinstance(state.scenario_output, dict):
+                state.stage = "legal"
+            else:
+                state.stage = "controller"
+                state.controller_ask_count = 0
+            self._persist_state(state)
         if state.pending_transition:
             raise ValueError("pending handoff confirmation required before sending next user message")
 
         text = user_input.strip()
         if not text:
             raise ValueError("user_input must be non-empty")
-        new_events: list[dict[str, Any]] = []
+
+        text = self._append_file_contents(text, attachments_meta)
+
         text = self._decorate_user_input_after_reject(state, text, new_events)
 
         module_key = _extract_module_key(attachments_meta)
@@ -913,17 +1175,45 @@ class MultiAgentSessionService:
             controller_attachments: dict[str, Any] = {
                 "role_id": state.role_id,
                 "attachments": attachments_meta,
+                "controller_ask_count": state.controller_ask_count,
+                "max_ask_rounds": 3,
             }
             if module_key:
                 controller_attachments["module_key"] = module_key
                 controller_attachments["module_scene_hints"] = list_module_scene_hints(module_key)
+
+            # If we have already asked 3 times, force routing regardless of what LLM decides
+            force_route = state.controller_ask_count >= 3
+
             controller_turn = state.controller_agent.run_turn(
                 user_input=text,
                 template_path=state.controller_template_path,
                 attachments_meta=controller_attachments,
+                on_token=on_token,
             )
             controller_payload = _strict_json_object(controller_turn.agent_reply)
             controller_askmore = _extract_askmore(controller_payload)
+
+            # Force askmore=no after 3 rounds of asking
+            if force_route and controller_askmore == "yes":
+                controller_askmore = "no"
+                controller_payload["askmore"] = "no"
+                # If LLM still wants to ask, synthesize a minimal analysis block
+                if "analysis" not in controller_payload or not isinstance(controller_payload.get("analysis"), dict):
+                    controller_payload["analysis"] = {
+                        "scene_id": "dispute_arbitration",
+                        "confidence_level": "C2",
+                        "escalation_flags": "L0",
+                        "stakeholders": "用户与用人单位",
+                        "timeline_and_events": {"cause": text, "process": "三轮追问后强制路由", "result": "待业务Agent进一步分析"},
+                        "current_status": text,
+                        "user_appeal": text,
+                        "faced_problems": "信息不足，强制路由至最匹配场景",
+                        "unknowns_to_clarify": [],
+                        "route_plan": "转入业务场景Agent处理",
+                    }
+                if "user_input" not in controller_payload or not isinstance(controller_payload.get("user_input"), str) or not str(controller_payload.get("user_input")).strip():
+                    controller_payload["user_input"] = text
 
             controller_blocks = adapt_payload_by_agent("ControllerAgent", controller_payload)
             new_messages.append(
@@ -931,6 +1221,7 @@ class MultiAgentSessionService:
             )
 
             if controller_askmore == "yes":
+                state.controller_ask_count += 1
                 self._persist_state(state)
                 return self._response(
                     state,
@@ -956,6 +1247,7 @@ class MultiAgentSessionService:
             if not isinstance(scenario_input, str) or not scenario_input.strip():
                 raise ValueError("controller payload.user_input must be non-empty string")
 
+            controller_analysis = controller_payload.get("analysis", {})
             self._append_handoff_request_message(
                 state,
                 from_agent="ControllerAgent",
@@ -963,6 +1255,12 @@ class MultiAgentSessionService:
                 reason="主控路由完成",
                 scene_id=scene_id,
                 event_collector=new_events,
+                analysis_summary={
+                    "current_status": str(controller_analysis.get("current_status", "")),
+                    "user_appeal": str(controller_analysis.get("user_appeal", "")),
+                    "faced_problems": str(controller_analysis.get("faced_problems", "")),
+                    "user_input": str(controller_payload.get("user_input", "")),
+                },
             )
             self._set_pending_transition(
                 state,
@@ -979,6 +1277,12 @@ class MultiAgentSessionService:
                     },
                 },
                 event_collector=new_events,
+                analysis_summary={
+                    "current_status": str(controller_analysis.get("current_status", "")),
+                    "user_appeal": str(controller_analysis.get("user_appeal", "")),
+                    "faced_problems": str(controller_analysis.get("faced_problems", "")),
+                    "user_input": str(controller_payload.get("user_input", "")),
+                },
             )
             self._persist_state(state)
             return self._response(
@@ -999,16 +1303,25 @@ class MultiAgentSessionService:
                 new_messages=new_messages,
                 new_handoffs=new_handoffs,
                 new_events=new_events,
+                on_token=on_token,
+            )
+
+        if state.stage == "legal":
+            return self._run_legal_phase(
+                state,
+                new_messages=new_messages,
+                new_handoffs=new_handoffs,
+                new_events=new_events,
+                on_token=on_token,
+                user_followup=text,
             )
 
         raise ValueError(f"unsupported stage for submit_turn: {state.stage}")
 
-    def confirm_handoff(self, session_id: str, approve: bool) -> SessionTurnResponse:
+    def confirm_handoff(self, session_id: str, approve: bool, on_token: Any | None = None) -> SessionTurnResponse:
         state = self.get_session(session_id)
         if not state.pending_transition:
             raise ValueError("no pending handoff to confirm")
-        if state.stage == "done":
-            raise ValueError("session already completed")
 
         transition = dict(state.pending_transition)
         pending_stage = str(state.pending_stage)
@@ -1070,6 +1383,13 @@ class MultiAgentSessionService:
             event_collector=new_events,
         )
         new_handoffs.append(handoff)
+
+        # Save current pending state for rollback if the AI call later fails
+        _saved_transition = dict(state.pending_transition) if state.pending_transition else None
+        _saved_pending_stage = str(state.pending_stage)
+        _saved_pending_payload = dict(state.pending_payload) if state.pending_payload else {}
+        _saved_stage = str(state.stage)
+
         self._clear_pending_transition(state)
 
         if pending_stage == "scenario":
@@ -1078,33 +1398,56 @@ class MultiAgentSessionService:
             scenario_attachments = dict(pending_payload.get("scenario_attachments", {}) or {})
             if not scenario_input:
                 raise ValueError("missing pending scenario_input for handoff confirmation")
-            return self._run_scenario_phase(
-                state,
-                text=scenario_input,
-                scenario_attachments=scenario_attachments,
-                new_messages=new_messages,
-                new_handoffs=new_handoffs,
-                new_events=new_events,
-            )
+            try:
+                return self._run_scenario_phase(
+                    state,
+                    text=scenario_input,
+                    scenario_attachments=scenario_attachments,
+                    new_messages=new_messages,
+                    new_handoffs=new_handoffs,
+                    new_events=new_events,
+                    on_token=on_token,
+                )
+            except Exception:
+                state.pending_transition = _saved_transition
+                state.pending_stage = _saved_pending_stage
+                state.pending_payload = _saved_pending_payload
+                state.stage = _saved_stage
+                self._persist_state(state)
+                raise
 
         if pending_stage == "legal":
             state.stage = "legal"
             if isinstance(pending_payload.get("scenario_output"), dict):
                 state.scenario_output = dict(pending_payload["scenario_output"])
 
-            scenario_tool_history = self._execute_scenario_tools_with_events(state, new_events)
+            # Skip re-running tools if results are already cached (e.g. retry after AI failure)
+            if state.scenario_tool_history:
+                scenario_tool_history = state.scenario_tool_history
+            else:
+                scenario_tool_history = self._execute_scenario_tools_with_events(state, new_events)
             tool_history_blocks = adapt_tool_history_text(scenario_tool_history)
             if tool_history_blocks:
                 new_messages.append(
                     self._append_agent_blocks(state, "ScenarioAgent", tool_history_blocks, new_events)
                 )
 
-            return self._run_legal_phase(
-                state,
-                new_messages=new_messages,
-                new_handoffs=new_handoffs,
-                new_events=new_events,
-            )
+            try:
+                return self._run_legal_phase(
+                    state,
+                    new_messages=new_messages,
+                    new_handoffs=new_handoffs,
+                    new_events=new_events,
+                    on_token=on_token,
+                )
+            except Exception:
+                # Restore pending_transition so the user can retry handoff confirmation
+                state.pending_transition = _saved_transition
+                state.pending_stage = _saved_pending_stage
+                state.pending_payload = _saved_pending_payload
+                state.stage = _saved_stage
+                self._persist_state(state)
+                raise
 
         raise ValueError(f"unsupported pending_stage: {pending_stage}")
 
@@ -1132,14 +1475,139 @@ class MultiAgentSessionService:
             "current_module_key": state.current_module_key,
             "pending_transition": self._public_pending_transition(state),
             "event_count": len(state.event_log),
+            "has_legal_report": bool(state.legal_report_markdown.strip()),
+            "legal_report_updated_at_utc": state.legal_report_updated_at_utc,
+        }
+
+    def get_legal_report(self, session_id: str) -> dict[str, str]:
+        state = self.get_session(session_id)
+        markdown = state.legal_report_markdown.strip()
+        if not markdown:
+            raise ValueError("legal report is not ready")
+        ts = state.legal_report_updated_at_utc.strip() or state.updated_at_utc
+        filename = f"legal-analysis-{state.session_id[:8]}.md"
+        return {
+            "filename": filename,
+            "markdown": markdown,
+            "updated_at_utc": ts,
         }
 
     def list_sessions(self, role_id: str | None = None) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
         expected_role = validate_role_id(role_id) if role_id is not None else None
-        for session_id, state in self.sessions.items():
+        # snapshot to avoid "dictionary changed size during iteration" under concurrent access
+        session_items = list(self.sessions.items())
+        for session_id, state in session_items:
             if expected_role is not None and state.role_id != expected_role:
                 continue
-            summaries.append(self.get_session_summary(session_id))
+            summary = self.get_session_summary(session_id)
+            # Override title with fast non-LLM version for listing
+            summary["title"] = self._derive_session_title(state, use_llm=False)
+            summaries.append(summary)
         summaries.sort(key=lambda item: str(item.get("updated_at_utc", "")), reverse=True)
         return summaries
+
+    def delete_session(self, session_id: str) -> None:
+        if session_id not in self.sessions:
+            raise ValueError(f"session not found: {session_id}")
+        del self.sessions[session_id]
+        snapshot_path = self._session_snapshot_path(session_id)
+        if snapshot_path.is_file():
+            snapshot_path.unlink()
+
+    def generate_analysis_report(self, session_id: str) -> dict[str, str]:
+        state = self.get_session(session_id)
+        if not state.messages:
+            raise ValueError("会话中没有对话记录，无法生成报告")
+        report_events: list[dict[str, Any]] = []
+        self._append_event(
+            state,
+            "report_generation_requested",
+            {"source": "generate_analysis_report_api"},
+            report_events,
+        )
+
+        conversation_text = []
+        for message in state.messages:
+            speaker = getattr(message, "speaker_type", "unknown")
+            label = "用户" if speaker == "user" else "AI顾问"
+            for block in list(getattr(message, "display_blocks", []) or []):
+                text = str(getattr(block, "text", "")).strip()
+                if text:
+                    cleaned = re.sub(r"^【[^】]*】\s*\S+\s*", "", text).strip()
+                    if cleaned:
+                        conversation_text.append(f"[{label}] {cleaned}")
+
+        if not conversation_text:
+            raise ValueError("会话中没有有效对话内容")
+
+        dialogue = "\n".join(conversation_text)[:4000]
+
+        prompt = f"""你是一位资深劳动法律顾问。请基于以下对话记录，生成一份专业的法律分析报告。
+
+## 对话记录
+{dialogue}
+
+## 报告要求
+请按以下结构输出报告（使用 Markdown 格式）：
+
+# 法律分析报告
+
+## 一、案情简介
+简要概述当事人的情况、争议背景和核心诉求。
+
+## 二、核心法律争议焦点
+列出本案涉及的 2-4 个核心法律争议焦点。
+
+## 三、争议焦点分析
+
+对每个争议焦点逐一分析，每个焦点必须包含：
+1. 焦点概述
+2. 法律分析意见
+3. **具体法律依据**：引用具体的法律条文全文（如《劳动合同法》第XX条的完整条文内容），并说明该条文如何适用于本案
+
+## 四、综合建议
+给出可操作的法律建议。
+
+## 五、参考法律文件
+列出本报告引用的所有法律文件及具体条款。
+
+---
+*本报告由职引 Pilot 可溯源 AI 劳动法顾问生成，仅供参考，不构成正式法律意见。*
+"""
+
+        markdown = chat_completion(user_prompt=prompt)
+        ts = now_utc_iso()
+        state.legal_report_markdown = markdown
+        state.legal_report_updated_at_utc = ts
+        self._append_event(
+            state,
+            "report_generated",
+            {
+                "source": "generate_analysis_report_api",
+                "length": len(markdown),
+                "updated_at_utc": ts,
+            },
+            report_events,
+        )
+        report_blocks = [
+            DisplayBlock(
+                kind="legal_report",
+                title="LegalAnalysisAgent 最终分析",
+                text=markdown,
+            )
+        ]
+        self._append_agent_blocks(
+            state,
+            "LegalAnalysisAgent",
+            report_blocks,
+            report_events,
+        )
+        self._persist_state(state)
+
+        filename = f"legal-analysis-{state.session_id[:8]}.md"
+        return {
+            "filename": filename,
+            "markdown": markdown,
+            "updated_at_utc": ts,
+        }

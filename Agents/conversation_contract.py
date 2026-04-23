@@ -12,6 +12,24 @@ AGENT_NAMES: tuple[str, ...] = (
     "ScenarioAgent",
     "LegalAnalysisAgent",
     "EmployerModuleAgent",
+    # Localised scenario agent display names
+    "招聘入职Agent",
+    "调岗调薪Agent",
+    "绩效违纪Agent",
+    "薪资社保Agent",
+    "假期医疗Agent",
+    "女职工保护Agent",
+    "工伤认定Agent",
+    "离职裁员Agent",
+    "竞业保密Agent",
+    "争议仲裁Agent",
+    "制度效力Agent",
+    "灵活用工Agent",
+    "平台用工Agent",
+    "法研检索Agent",
+    "律师问答代理Agent",
+    "证据文书Agent",
+    "场景分析Agent",
 )
 
 

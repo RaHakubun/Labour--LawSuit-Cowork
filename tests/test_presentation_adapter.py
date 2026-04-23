@@ -11,6 +11,30 @@ from Agents.presentation_adapter import (
 
 
 class PresentationAdapterTests(unittest.TestCase):
+    LEGAL_DATA = {
+        "schema_version": "1.0",
+        "issues": [
+            {
+                "issue_id": "I1",
+                "title": "是否违法解除",
+                "conclusion": "大概率违法解除",
+                "confidence": "C3",
+                "citation_ids": ["C1"],
+            }
+        ],
+        "citations": [
+            {
+                "citation_id": "C1",
+                "kind": "law",
+                "law_name": "中华人民共和国劳动合同法",
+                "article": "第四十条",
+                "title": "中华人民共和国劳动合同法第四十条",
+                "quote": "条文摘录",
+                "source": {"tool_name": "检索法律法规-语义", "query": "违法解除条款"},
+            }
+        ],
+    }
+
     def test_build_handoff_block(self):
         block = build_handoff_block("ControllerAgent", "ScenarioAgent", scene_id="work_injury")
         self.assertEqual(block.kind, "handoff")
@@ -61,11 +85,44 @@ class PresentationAdapterTests(unittest.TestCase):
         self.assertTrue(any(block.kind == "tool_plan" for block in blocks))
 
     def test_adapt_legal_payload_final(self):
-        payload = {"askmore": "no", "analysis": "# 结论\n建议先补证后仲裁。"}
+        payload = {"askmore": "no", "analysis": "# 结论\n建议先补证后仲裁。", "data": self.LEGAL_DATA}
         blocks = adapt_legal_payload(payload)
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0].kind, "legal_report")
         self.assertIn("建议先补证", blocks[0].text)
+        self.assertIn("legal_trace_data", blocks[0].metadata)
+
+    def test_adapt_legal_payload_query_and_tool(self):
+        payload = {
+            "askmore": "yes",
+            "query": "我先给你口头结论，同时继续查法条。",
+            "tool": {"toolname1": 'mcp_query("检索法律法规-语义","违法解除条款")'},
+        }
+        blocks = adapt_legal_payload(payload)
+        self.assertEqual(blocks[0].kind, "agent_message")
+        self.assertEqual(blocks[1].kind, "tool_plan")
+
+    def test_adapt_legal_payload_end(self):
+        payload = {
+            "askmore": "end",
+            "query": "本轮会话结束。",
+            "analysis": "# 最终结论\n建议尽快仲裁。",
+            "data": self.LEGAL_DATA,
+        }
+        blocks = adapt_legal_payload(payload)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0].kind, "agent_message")
+        self.assertEqual(blocks[1].kind, "legal_report")
+
+    def test_adapt_legal_payload_no_missing_data_raises(self):
+        payload = {"askmore": "no", "analysis": "# 结论\n建议先补证后仲裁。"}
+        with self.assertRaises(ValueError):
+            adapt_legal_payload(payload)
+
+    def test_adapt_legal_payload_invalid_data_type_raises(self):
+        payload = {"askmore": "no", "analysis": "# 结论\n建议先补证后仲裁。", "data": "bad"}
+        with self.assertRaises(ValueError):
+            adapt_legal_payload(payload)
 
     def test_adapt_tool_history_text(self):
         tool_history = (

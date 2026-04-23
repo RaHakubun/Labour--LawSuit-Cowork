@@ -3,7 +3,7 @@
   "role_id": "worker",
   "stage": "scenario",
   "created_at_utc": "2026-04-11T06:46:58Z",
-  "updated_at_utc": "2026-04-11T07:03:58Z",
+  "updated_at_utc": "2026-04-13T08:14:29Z",
   "turn_id": 3,
   "scene_id": "recruitment_probation",
   "scenario_template_path": "/Users/luobowen/Documents/Labour--LawSuit-Cowork/Prompt_Template/ScenarioAgents/recruitment_probation.md",
@@ -17,6 +17,8 @@
   "pending_payload": {},
   "inject_rejection_prefix_on_next_turn": false,
   "current_module_key": "",
+  "legal_report_markdown": "",
+  "legal_report_updated_at_utc": "",
   "messages": [
     {
       "session_id": "859d3593b4ed4ac0b3735b85e73f30d4",
@@ -376,6 +378,7 @@
       }
     }
   ],
+  "cached_title": "你好",
   "controller_conversation_messages": [
     [
       "User",

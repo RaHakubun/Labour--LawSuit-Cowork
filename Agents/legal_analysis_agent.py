@@ -32,6 +32,7 @@ class LegalAnalysisTurnResult:
     agent_reply: str
     parsed_output: dict[str, Any]
     askmore: str
+    query: str
     tool_calls: list[ToolCall]
     tool_call_history: str
 
@@ -111,9 +112,88 @@ class LegalAnalysisAgent:
         askmore = payload.get("askmore")
         if isinstance(askmore, str):
             normalized = askmore.strip().lower()
-            if normalized in {"yes", "no"}:
+            if normalized in {"yes", "no", "end"}:
                 return normalized
         raise ValueError('Missing or invalid "askmore" in legal analysis output.')
+
+    def _extract_query(self, payload: dict[str, Any]) -> str:
+        query = payload.get("query")
+        if query is None:
+            return ""
+        if not isinstance(query, str):
+            raise ValueError('payload.query must be a string when provided.')
+        return query.strip()
+
+    def _validate_data_object(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_data = payload.get("data")
+        if not isinstance(raw_data, dict):
+            raise ValueError('askmore=no/end requires "data" as JSON object.')
+
+        schema_version = raw_data.get("schema_version")
+        if not isinstance(schema_version, str) or not schema_version.strip():
+            raise ValueError('payload.data.schema_version must be a non-empty string.')
+
+        issues = raw_data.get("issues")
+        citations = raw_data.get("citations")
+        if not isinstance(issues, list):
+            raise ValueError('payload.data.issues must be a list.')
+        if not isinstance(citations, list):
+            raise ValueError('payload.data.citations must be a list.')
+
+        for idx, issue in enumerate(issues, start=1):
+            if not isinstance(issue, dict):
+                raise ValueError(f"payload.data.issues[{idx}] must be an object.")
+            issue_id = issue.get("issue_id")
+            title = issue.get("title")
+            conclusion = issue.get("conclusion")
+            confidence = issue.get("confidence")
+            citation_ids = issue.get("citation_ids")
+            if not isinstance(issue_id, str) or not issue_id.strip():
+                raise ValueError(f"payload.data.issues[{idx}].issue_id must be non-empty string.")
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError(f"payload.data.issues[{idx}].title must be non-empty string.")
+            if not isinstance(conclusion, str) or not conclusion.strip():
+                raise ValueError(f"payload.data.issues[{idx}].conclusion must be non-empty string.")
+            if not isinstance(confidence, str) or not confidence.strip():
+                raise ValueError(f"payload.data.issues[{idx}].confidence must be non-empty string.")
+            if not isinstance(citation_ids, list) or any(
+                not isinstance(citation_id, str) or not citation_id.strip()
+                for citation_id in citation_ids
+            ):
+                raise ValueError(
+                    f"payload.data.issues[{idx}].citation_ids must be list of non-empty strings."
+                )
+
+        for idx, citation in enumerate(citations, start=1):
+            if not isinstance(citation, dict):
+                raise ValueError(f"payload.data.citations[{idx}] must be an object.")
+            required_text_fields = ["citation_id", "kind", "law_name", "article", "title", "quote"]
+            for field_name in required_text_fields:
+                field_value = citation.get(field_name)
+                if not isinstance(field_value, str) or not field_value.strip():
+                    raise ValueError(
+                        f"payload.data.citations[{idx}].{field_name} must be non-empty string."
+                    )
+
+            source = citation.get("source")
+            if not isinstance(source, dict):
+                raise ValueError(f"payload.data.citations[{idx}].source must be object.")
+            tool_name = source.get("tool_name")
+            query = source.get("query")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                raise ValueError(
+                    f"payload.data.citations[{idx}].source.tool_name must be non-empty string."
+                )
+            validate_mcp_service_name(
+                tool_name.strip(),
+                allowed_service_names=self.allowed_tool_names,
+            )
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError(
+                    f"payload.data.citations[{idx}].source.query must be non-empty string."
+                )
+
+        return raw_data
 
     def _parse_mcp_query_string(self, text: str) -> list[ToolCall]:
         calls: list[ToolCall] = []
@@ -188,9 +268,6 @@ class LegalAnalysisAgent:
             if not call.input:
                 raise ValueError(f"empty tool input for tool: {call.tool_name}")
 
-        askmore = str(payload.get("askmore", "")).strip().lower()
-        if askmore == "yes" and not calls:
-            raise ValueError('askmore=yes but no valid "tool" calls were provided.')
         return calls
 
     def _render_tool_history_round(
@@ -211,6 +288,7 @@ class LegalAnalysisAgent:
         scenario_agent_input: str,
         tool_call_history: str,
         template_path: str = LEGAL_ANALYSIS_TEMPLATE_DEFAULT,
+        on_token: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> LegalAnalysisTurnResult:
         injected_prompt = self.build_user_prompt(
@@ -219,20 +297,31 @@ class LegalAnalysisAgent:
             template_path=template_path,
         )
         system_prompt = self.main_prompt if self.main_prompt.strip() else None
-        agent_reply = self.llm_callable(
+        agent_reply = llm_call.invoke_llm(
+            self.llm_callable,
             user_prompt=injected_prompt,
             system_prompt=system_prompt,
             model=self.model,
+            on_token=on_token,
             **kwargs,
         )
         payload = self._extract_json_payload(agent_reply)
         askmore = self._extract_askmore(payload)
-        tool_calls = self._normalize_tool_calls(payload) if askmore == "yes" else []
+        query = self._extract_query(payload)
+        tool_calls = self._normalize_tool_calls(payload)
+        if askmore == "yes" and not tool_calls and not query:
+            raise ValueError('askmore=yes requires at least one of "query" or "tool".')
+        if askmore in {"no", "end"}:
+            analysis = payload.get("analysis")
+            if not isinstance(analysis, str) or not analysis.strip():
+                raise ValueError(f'askmore={askmore} requires non-empty "analysis".')
+            self._validate_data_object(payload)
         return LegalAnalysisTurnResult(
             injected_prompt=injected_prompt,
             agent_reply=agent_reply,
             parsed_output=payload,
             askmore=askmore,
+            query=query,
             tool_calls=tool_calls,
             tool_call_history=tool_call_history,
         )
@@ -243,6 +332,7 @@ class LegalAnalysisAgent:
         template_path: str = LEGAL_ANALYSIS_TEMPLATE_DEFAULT,
         initial_tool_call_history: str = "",
         max_rounds: int = DEFAULT_MAX_ROUNDS,
+        on_token: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         tool_call_history = initial_tool_call_history.strip()
@@ -253,6 +343,7 @@ class LegalAnalysisAgent:
                 scenario_agent_input=scenario_agent_input,
                 tool_call_history=tool_call_history,
                 template_path=template_path,
+                on_token=on_token,
                 **kwargs,
             )
             trace.append(
@@ -264,7 +355,14 @@ class LegalAnalysisAgent:
                 }
             )
 
-            if turn.askmore == "no":
+            if turn.askmore in {"no", "end"}:
+                return {
+                    "final_output": turn.parsed_output,
+                    "tool_call_history": tool_call_history,
+                    "rounds": round_index,
+                    "trace": trace,
+                }
+            if turn.askmore == "yes" and not turn.tool_calls:
                 return {
                     "final_output": turn.parsed_output,
                     "tool_call_history": tool_call_history,
