@@ -10,6 +10,8 @@ from utils.pkulaw_mcp_client import (
     mcp_query,
     validate_mcp_service_name,
 )
+from .case_state import CaseWorkspace
+from .state_manager import CasePatch, PatchOperation
 
 DEFAULT_STOP_WORDS = {"exit", "quit", "q", "退出"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -331,6 +333,148 @@ class ScenarioAgent:
             agent_reply=agent_reply,
             parsed_output=payload,
             askmore=askmore,
+        )
+
+    def build_case_patch_from_payload(
+        self,
+        workspace: CaseWorkspace,
+        payload: dict[str, Any],
+    ) -> CasePatch:
+        operations: list[PatchOperation] = []
+        askmore = str(payload.get("askmore", "")).strip().lower()
+        if askmore == "yes":
+            ask = str(payload.get("ask", "")).strip()
+            if ask:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.missing_information",
+                        {
+                            "field": "scenario.follow_up",
+                            "reason": "scenario_requires_clarification",
+                            "question": ask,
+                            "source": {"agent": "ScenarioAgent"},
+                        },
+                    )
+                )
+
+        analysis = payload.get("analysis")
+        if isinstance(analysis, dict):
+            scene_id = str(analysis.get("scene_id", "")).strip()
+            current_status = str(analysis.get("current_status", "")).strip()
+            user_appeal = str(analysis.get("user_appeal", "")).strip()
+            faced_problems = str(analysis.get("faced_problems", "")).strip()
+            route_plan = str(analysis.get("route_plan", "")).strip()
+            missing_info = str(analysis.get("missing_info_note", "")).strip()
+
+            if scene_id:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.preliminary_conclusions",
+                        {
+                            "source": "ScenarioAgent",
+                            "kind": "scene_id",
+                            "text": scene_id,
+                        },
+                    )
+                )
+            if user_appeal:
+                operations.append(
+                    PatchOperation(
+                        "upsert_fact",
+                        "facts.items.claim.user_appeal",
+                        {
+                            "value": user_appeal,
+                            "status": "user_claimed",
+                            "source": {"agent": "ScenarioAgent"},
+                            "confidence": "",
+                        },
+                    )
+                )
+            if current_status:
+                operations.append(
+                    PatchOperation(
+                        "upsert_fact",
+                        "facts.items.scenario.current_status",
+                        {
+                            "value": current_status,
+                            "status": "user_claimed",
+                            "source": {"agent": "ScenarioAgent"},
+                            "confidence": "",
+                        },
+                    )
+                )
+            if faced_problems:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.issues",
+                        {
+                            "issue_id": f"scenario.{workspace.version}.faced_problems",
+                            "title": faced_problems,
+                            "source": "ScenarioAgent",
+                        },
+                    )
+                )
+            if route_plan:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.preliminary_conclusions",
+                        {
+                            "source": "ScenarioAgent",
+                            "kind": "route_plan",
+                            "text": route_plan,
+                        },
+                    )
+                )
+            if missing_info:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.missing_information",
+                        {
+                            "field": "scenario.missing_info_note",
+                            "reason": "scenario_template_missing_info",
+                            "question": missing_info,
+                            "source": {"agent": "ScenarioAgent"},
+                        },
+                    )
+                )
+
+        for call in self.normalize_tool_calls(payload):
+            operations.append(
+                PatchOperation(
+                    "append",
+                    "analysis.legal_sources",
+                    {
+                        "kind": "tool_request",
+                        "tool_name": call.tool_name,
+                        "query": call.input,
+                        "source": "ScenarioAgent",
+                    },
+                )
+            )
+
+        if not operations:
+            operations.append(
+                PatchOperation(
+                    "append",
+                    "analysis.preliminary_conclusions",
+                    {
+                        "source": "ScenarioAgent",
+                        "kind": "raw_payload_observed",
+                        "text": "ScenarioAgent returned no structured case patch fields.",
+                    },
+                )
+            )
+
+        return CasePatch.new(
+            agent_name="ScenarioAgent",
+            base_version=workspace.version,
+            operations=operations,
+            metadata={"askmore": askmore},
         )
 
     def chat_console(

@@ -5,6 +5,7 @@ import re
 from typing import Any, Callable, Optional
 
 from . import llm_call
+from .case_state import CaseWorkspace
 from utils.pkulaw_mcp_client import (
     ALLOWED_MCP_SERVICE_NAMES,
     mcp_query,
@@ -79,6 +80,87 @@ class LegalAnalysisAgent:
             template=template,
             scenario_agent_input=scenario_agent_input,
             tool_call_history=tool_call_history,
+        )
+
+    def build_prompt_from_case_snapshot(self, case_snapshot: dict[str, Any]) -> str:
+        return (
+            "CaseState Snapshot\n"
+            "请基于以下稳定案件状态生成法律分析，不要把用户主张直接当作已确认事实。\n\n"
+            + json.dumps(case_snapshot, ensure_ascii=False, indent=2)
+        )
+
+    def build_output_patch(
+        self,
+        workspace: CaseWorkspace,
+        final_output: dict[str, Any],
+    ):
+        from .state_manager import CasePatch, PatchOperation
+        from .conversation_contract import now_utc_iso
+
+        analysis_text = str(final_output.get("analysis", "")).strip()
+        operations: list[PatchOperation] = []
+        data = final_output.get("data")
+        if isinstance(data, dict):
+            for issue in list(data.get("issues", []) or []):
+                if isinstance(issue, dict):
+                    operations.append(
+                        PatchOperation(
+                            "append",
+                            "analysis.preliminary_conclusions",
+                            {
+                                "source": "LegalAnalysisAgent",
+                                "kind": "issue_conclusion",
+                                "issue": dict(issue),
+                            },
+                        )
+                    )
+            for citation in list(data.get("citations", []) or []):
+                if isinstance(citation, dict):
+                    operations.append(
+                        PatchOperation(
+                            "append",
+                            "analysis.legal_sources",
+                            {
+                                "kind": "citation",
+                                **dict(citation),
+                                "source_agent": "LegalAnalysisAgent",
+                            },
+                        )
+                    )
+        if analysis_text:
+            operations.append(
+                PatchOperation(
+                    "add_output",
+                    "outputs.artifacts",
+                    {
+                        "artifact_id": f"legal-report-{workspace.session_id[:8]}-{workspace.version + 1}",
+                        "type": "legal_report",
+                        "title": "法律分析报告",
+                        "content": analysis_text,
+                        "generated_by": "LegalAnalysisAgent",
+                        "generated_at": now_utc_iso(),
+                        "case_version": workspace.version,
+                        "metadata": {"source": "legal_agent_output"},
+                    },
+                )
+            )
+        if not operations:
+            operations.append(
+                PatchOperation(
+                    "append",
+                    "analysis.preliminary_conclusions",
+                    {
+                        "source": "LegalAnalysisAgent",
+                        "kind": "empty_output",
+                        "text": "LegalAnalysisAgent returned no report body.",
+                    },
+                )
+            )
+        return CasePatch.new(
+            agent_name="LegalAnalysisAgent",
+            base_version=workspace.version,
+            operations=operations,
+            metadata={"askmore": str(final_output.get("askmore", ""))},
         )
 
     def _extract_json_payload(self, text: str) -> dict[str, Any]:

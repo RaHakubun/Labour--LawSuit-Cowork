@@ -92,6 +92,56 @@ class ApiServerTests(unittest.TestCase):
             self.assertEqual(msg_resp.status_code, 200)
             self.assertGreaterEqual(len(msg_resp.json()["messages"]), 2)
 
+    def test_case_state_debug_endpoint(self):
+        controller_llm = FakeLLM(
+            ['{"askmore":"yes","ask":"请补充合同签署日期、解除时间和工资。"}']
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            controller_template = tmp / "ControllerAgent.md"
+            legal_template = tmp / "LegalAnalysisAgent.md"
+            scenario_root = tmp / "ScenarioAgents"
+            storage_root = tmp / "session_storage"
+            scenario_root.mkdir(parents=True, exist_ok=True)
+            (scenario_root / "recruitment_probation.md").write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            controller_template.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            legal_template.write_text(
+                "scene={Scenario_Agent_Input}\nhistory={Tool_Call_History}",
+                encoding="utf-8",
+            )
+            service = MultiAgentSessionService(
+                controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
+                scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
+                controller_template_path=str(controller_template),
+                legal_template_path=str(legal_template),
+                scenario_template_root=scenario_root,
+                storage_root=storage_root,
+            )
+            app = create_app(service=service)
+            client = TestClient(app)
+            session_id = client.post("/api/v1/sessions", json={"role_id": "worker"}).json()["session_id"]
+            client.post(
+                f"/api/v1/sessions/{session_id}/turns",
+                json={"user_input": "公司口头辞退我"},
+            )
+
+            response = client.get(f"/api/v1/sessions/{session_id}/case-state")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["session_id"], session_id)
+        self.assertIn("case_state", payload)
+        self.assertIn("case_version", payload)
+        self.assertIn("last_patch_results", payload)
+
     def test_full_chain_via_http(self):
         controller_llm = FakeLLM(
             [

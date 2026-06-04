@@ -108,6 +108,9 @@ ROLE_MODULE_KEYS: dict[str, tuple[str, ...]] = {
     ),
     "employer": (
         "compensation_calculator",
+        "compliance_scanner",
+        "contract_templates",
+        "communication_guide",
     ),
     "lawyer": (
         "law_search",

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from .case_state import CaseState, CaseWorkspace
+from .event_bus import build_event
 from .agent import Agent
 from .conversation_contract import (
     ConversationMessagePayload,
@@ -36,6 +38,7 @@ from .scene_catalog import (
     validate_scene_id,
 )
 from .scenario_agent import DEFAULT_MCP_RETRIES, SCENARIO_TEMPLATE_ROOT, ScenarioAgent
+from .state_manager import CasePatch, PatchOperation, StateManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -207,6 +210,7 @@ class SessionState:
     messages: list[Any] = field(default_factory=list)
     handoffs: list[HandoffPayload] = field(default_factory=list)
     event_log: list[dict[str, Any]] = field(default_factory=list)
+    workspace: CaseWorkspace = field(default_factory=lambda: CaseWorkspace.new("", ""))
     cached_title: str = ""
 
 
@@ -227,6 +231,7 @@ class MultiAgentSessionService:
     scenario_tool_retry_times: int = DEFAULT_MCP_RETRIES
     legal_max_rounds: int = 8
     storage_root: Path = field(default_factory=lambda: SESSION_STORAGE_DEFAULT)
+    state_manager: StateManager = field(default_factory=StateManager)
     sessions: dict[str, SessionState] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -264,6 +269,9 @@ class MultiAgentSessionService:
             "messages": [message.to_dict() for message in state.messages],
             "handoffs": [handoff.to_dict() for handoff in state.handoffs],
             "event_log": [dict(item) for item in state.event_log],
+            "case_state": state.workspace.case_state.to_dict(),
+            "case_version": state.workspace.version,
+            "case_workspace": state.workspace.to_dict(),
             "cached_title": state.cached_title,
             "controller_conversation_messages": [
                 [str(role), str(content)]
@@ -333,6 +341,8 @@ class MultiAgentSessionService:
             if not _stored_scene_root.is_dir():
                 _stored_scene_root = self.scenario_template_root.resolve()
 
+            workspace = self._workspace_from_snapshot(snapshot, session_id=session_id, role_id=role_id)
+
             state = SessionState(
                 session_id=session_id,
                 role_id=role_id,
@@ -370,9 +380,91 @@ class MultiAgentSessionService:
                     for item in list(snapshot.get("event_log", []))
                     if isinstance(item, dict)
                 ],
+                workspace=workspace,
             )
+            state.workspace.messages = state.messages
+            state.workspace.handoffs = state.handoffs
+            state.workspace.event_log = state.event_log
             scenario_agent.template_root = state.scenario_template_root
             self.sessions[session_id] = state
+
+    def _workspace_from_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        session_id: str,
+        role_id: str,
+    ) -> CaseWorkspace:
+        raw_workspace = snapshot.get("case_workspace")
+        if isinstance(raw_workspace, dict):
+            workspace = CaseWorkspace.from_dict(raw_workspace)
+            workspace.session_id = session_id
+            workspace.role_id = role_id
+            workspace.case_state.interaction["user_role"] = role_id
+            return workspace
+
+        workspace = CaseWorkspace.new(session_id=session_id, role_id=role_id)
+        raw_case_state = snapshot.get("case_state")
+        if isinstance(raw_case_state, dict):
+            workspace.case_state = CaseState.from_dict(raw_case_state)
+            workspace.case_state.interaction["user_role"] = role_id
+            workspace.version = int(snapshot.get("case_version", 0))
+            return workspace
+
+        self._migrate_legacy_snapshot_to_workspace(snapshot, workspace)
+        return workspace
+
+    def _migrate_legacy_snapshot_to_workspace(
+        self,
+        snapshot: dict[str, Any],
+        workspace: CaseWorkspace,
+    ) -> None:
+        state = workspace.case_state
+        state.interaction["stage"] = str(snapshot.get("stage", "controller"))
+        state.interaction["user_role"] = workspace.role_id
+        scene_id = str(snapshot.get("scene_id", "")).strip()
+        if scene_id:
+            state.interaction["scene_id"] = scene_id
+        scenario_output = snapshot.get("scenario_output")
+        if isinstance(scenario_output, dict):
+            analysis = scenario_output.get("analysis")
+            if isinstance(analysis, dict):
+                status = str(analysis.get("current_status", "")).strip()
+                appeal = str(analysis.get("user_appeal", "")).strip()
+                problems = str(analysis.get("faced_problems", "")).strip()
+                if status:
+                    state.facts["items"]["scenario.current_status"] = {
+                        "fact_id": "scenario.current_status",
+                        "value": status,
+                        "status": "user_claimed",
+                        "source": {"agent": "ScenarioAgent", "migration": True},
+                        "confidence": "",
+                        "updated_at": str(snapshot.get("updated_at_utc", now_utc_iso())),
+                    }
+                if appeal:
+                    state.interaction["current_goal"] = appeal
+                if problems:
+                    state.analysis["issues"].append(
+                        {"issue_id": "legacy.faced_problems", "title": problems}
+                    )
+        markdown = str(snapshot.get("legal_report_markdown", "")).strip()
+        if markdown:
+            state.outputs["artifacts"].append(
+                {
+                    "artifact_id": f"legacy-report-{workspace.session_id[:8]}",
+                    "type": "legal_report",
+                    "title": "法律分析报告",
+                    "content": markdown,
+                    "generated_by": "LegalAnalysisAgent",
+                    "generated_at": str(
+                        snapshot.get("legal_report_updated_at_utc")
+                        or snapshot.get("updated_at_utc")
+                        or now_utc_iso()
+                    ),
+                    "case_version": workspace.version,
+                    "metadata": {"migration": True},
+                }
+            )
 
     def create_session(self, role_id: str) -> SessionState:
         role = validate_role_id(role_id)
@@ -390,7 +482,11 @@ class MultiAgentSessionService:
             scenario_template_root=self.scenario_template_root.resolve(),
             created_at_utc=now_utc_iso(),
             updated_at_utc=now_utc_iso(),
+            workspace=CaseWorkspace.new(session_id=session_id, role_id=role),
         )
+        state.workspace.messages = state.messages
+        state.workspace.handoffs = state.handoffs
+        state.workspace.event_log = state.event_log
         self.sessions[session_id] = state
         self._persist_state(state)
         return state
@@ -471,15 +567,13 @@ class MultiAgentSessionService:
         *,
         turn_id: int | None = None,
     ) -> dict[str, Any]:
-        return {
-            "event_id": uuid4().hex,
-            "session_id": state.session_id,
-            "turn_id": int(state.turn_id if turn_id is None else turn_id),
-            "stage": state.stage,
-            "event_type": event_type,
-            "created_at_utc": now_utc_iso(),
-            "payload": dict(payload),
-        }
+        return build_event(
+            session_id=state.session_id,
+            turn_id=int(state.turn_id if turn_id is None else turn_id),
+            stage=state.stage,
+            event_type=event_type,
+            payload=payload,
+        )
 
     def _append_event(
         self,
@@ -492,9 +586,90 @@ class MultiAgentSessionService:
     ) -> dict[str, Any]:
         event = self._build_event(state, event_type, payload, turn_id=turn_id)
         state.event_log.append(event)
+        state.workspace.event_log = state.event_log
         collector.append(event)
         self._persist_state(state)
         return event
+
+    def _apply_case_patch(
+        self,
+        state: SessionState,
+        patch: CasePatch,
+        event_collector: list[dict[str, Any]],
+    ) -> None:
+        self._append_event(
+            state,
+            "patch_submitted",
+            {"patch": patch.to_dict()},
+            event_collector,
+        )
+        result = self.state_manager.apply_patch(state.workspace, patch)
+        self._append_event(
+            state,
+            "patch_applied" if result.accepted else "patch_rejected",
+            result.to_dict(),
+            event_collector,
+        )
+        if not result.accepted:
+            raise ValueError("; ".join(result.errors))
+        self._persist_state(state)
+
+    def _build_controller_case_patch(
+        self,
+        state: SessionState,
+        payload: dict[str, Any],
+        *,
+        user_input: str,
+        askmore: str,
+    ) -> CasePatch:
+        operations: list[PatchOperation] = [
+            PatchOperation("set", "interaction.stage", state.stage),
+            PatchOperation("set", "interaction.last_user_input", user_input),
+        ]
+        if askmore == "yes":
+            ask = str(payload.get("ask", "")).strip()
+            if ask:
+                operations.append(PatchOperation("set", "interaction.pending_questions", [ask]))
+        analysis = payload.get("analysis")
+        if isinstance(analysis, dict):
+            scene_id = str(analysis.get("scene_id", "")).strip()
+            user_appeal = str(analysis.get("user_appeal", "")).strip()
+            current_status = str(analysis.get("current_status", "")).strip()
+            faced_problems = str(analysis.get("faced_problems", "")).strip()
+            if scene_id:
+                operations.append(PatchOperation("set", "interaction.scene_id", scene_id))
+            if user_appeal:
+                operations.append(PatchOperation("set", "interaction.current_goal", user_appeal))
+            if current_status:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.preliminary_conclusions",
+                        {
+                            "source": "ControllerAgent",
+                            "kind": "current_status",
+                            "text": current_status,
+                        },
+                    )
+                )
+            if faced_problems:
+                operations.append(
+                    PatchOperation(
+                        "append",
+                        "analysis.issues",
+                        {
+                            "issue_id": f"controller.{state.turn_id}.faced_problems",
+                            "title": faced_problems,
+                            "source": "ControllerAgent",
+                        },
+                    )
+                )
+        return CasePatch.new(
+            agent_name="ControllerAgent",
+            base_version=state.workspace.version,
+            operations=operations,
+            metadata={"stage": state.stage, "askmore": askmore},
+        )
 
     def _validate_role_module_access(self, role_id: str, module_key: str) -> None:
         role_modules = set(list_role_modules(role_id))
@@ -796,6 +971,58 @@ class MultiAgentSessionService:
                 parts.append(f"\n\n[附件: {name}]（{ext} 格式文件已上传，请基于文件名和用户描述进行分析）")
         return "".join(parts)
 
+    def _build_evidence_case_patch(
+        self,
+        state: SessionState,
+        attachments_meta: Any | None,
+    ) -> CasePatch | None:
+        if not isinstance(attachments_meta, dict):
+            return None
+        files = attachments_meta.get("files")
+        if not isinstance(files, list) or not files:
+            return None
+        operations: list[PatchOperation] = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            file_id = str(item.get("file_id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not file_id or not name:
+                continue
+            safe_name = f"{file_id}_{name}"
+            path = self.UPLOAD_DIR / safe_name
+            ext = Path(name).suffix.lower()
+            extracted_text = ""
+            authenticity_risk = "unparsed_file"
+            if path.is_file() and ext in {".txt", ".csv", ".md"}:
+                extracted_text = path.read_text(encoding="utf-8", errors="replace")[:30000]
+                authenticity_risk = "text_extracted_unverified"
+            elif not path.is_file():
+                authenticity_risk = "file_missing"
+            operations.append(
+                PatchOperation(
+                    "upsert_evidence",
+                    f"evidence.items.{file_id}",
+                    {
+                        "evidence_id": file_id,
+                        "type": ext.lstrip(".") or "unknown",
+                        "source": {"file_id": file_id, "name": name},
+                        "extracted_text": extracted_text,
+                        "linked_fact_ids": [],
+                        "probative_value": "unreviewed",
+                        "authenticity_risk": authenticity_risk,
+                    },
+                )
+            )
+        if not operations:
+            return None
+        return CasePatch.new(
+            agent_name="EvidenceParser",
+            base_version=state.workspace.version,
+            operations=operations,
+            metadata={"source": "attachments_meta"},
+        )
+
     def _decorate_user_input_after_reject(
         self,
         state: SessionState,
@@ -880,6 +1107,15 @@ class MultiAgentSessionService:
         )
         scenario_payload = _strict_json_object(scenario_turn.agent_reply)
         scenario_askmore = _extract_askmore(scenario_payload)
+
+        self._apply_case_patch(
+            state,
+            state.scenario_agent.build_case_patch_from_payload(
+                state.workspace,
+                scenario_payload,
+            ),
+            new_events,
+        )
 
         scenario_blocks = adapt_payload_by_agent("ScenarioAgent", scenario_payload, scene_id=state.scene_id)
         scenario_display_name = _scenario_display_name(state.scene_id)
@@ -1007,6 +1243,31 @@ class MultiAgentSessionService:
 
         history = state.scenario_agent._render_tool_history(calls, results)
         state.scenario_tool_history = history
+        if calls:
+            operations = [
+                PatchOperation(
+                    "append",
+                    "analysis.legal_sources",
+                    {
+                        "kind": "tool_result",
+                        "tool_name": call.tool_name,
+                        "query": call.input,
+                        "result": result_text,
+                        "source": "ScenarioAgent",
+                    },
+                )
+                for call, result_text in zip(calls, results)
+            ]
+            self._apply_case_patch(
+                state,
+                CasePatch.new(
+                    agent_name="ScenarioAgent",
+                    base_version=state.workspace.version,
+                    operations=operations,
+                    metadata={"source": "scenario_tool_results"},
+                ),
+                new_events,
+            )
         self._persist_state(state)
         return history
 
@@ -1053,6 +1314,14 @@ class MultiAgentSessionService:
             report_ts = now_utc_iso()
             state.legal_report_markdown = legal_markdown
             state.legal_report_updated_at_utc = report_ts
+            self._apply_case_patch(
+                state,
+                state.legal_analysis_agent.build_output_patch(
+                    state.workspace,
+                    final_output,
+                ),
+                new_events,
+            )
             self._append_event(
                 state,
                 "report_generated",
@@ -1156,6 +1425,19 @@ class MultiAgentSessionService:
         new_messages: list[ConversationMessagePayload] = []
         new_handoffs: list[HandoffPayload] = []
 
+        self._append_event(
+            state,
+            "user_input_received",
+            {
+                "text": text,
+                "attachments_meta": attachments_meta if isinstance(attachments_meta, dict) else None,
+            },
+            new_events,
+        )
+        evidence_patch = self._build_evidence_case_patch(state, attachments_meta)
+        if evidence_patch is not None:
+            self._apply_case_patch(state, evidence_patch, new_events)
+
         stage_to_agent = {
             "controller": "ControllerAgent",
             "scenario": "ScenarioAgent",
@@ -1214,6 +1496,17 @@ class MultiAgentSessionService:
                     }
                 if "user_input" not in controller_payload or not isinstance(controller_payload.get("user_input"), str) or not str(controller_payload.get("user_input")).strip():
                     controller_payload["user_input"] = text
+
+            self._apply_case_patch(
+                state,
+                self._build_controller_case_patch(
+                    state,
+                    controller_payload,
+                    user_input=text,
+                    askmore=controller_askmore,
+                ),
+                new_events,
+            )
 
             controller_blocks = adapt_payload_by_agent("ControllerAgent", controller_payload)
             new_messages.append(
@@ -1459,6 +1752,20 @@ class MultiAgentSessionService:
         state = self.get_session(session_id)
         return [dict(item) for item in state.event_log]
 
+    def get_case_state(self, session_id: str) -> dict[str, Any]:
+        state = self.get_session(session_id)
+        state.workspace.messages = state.messages
+        state.workspace.handoffs = state.handoffs
+        state.workspace.event_log = state.event_log
+        return {
+            "session_id": state.session_id,
+            "role_id": state.role_id,
+            "case_state": state.workspace.case_state.to_dict(),
+            "case_version": state.workspace.version,
+            "last_patch_results": [dict(item) for item in state.workspace.last_patch_results],
+            "events": [dict(item) for item in state.event_log],
+        }
+
     def get_session_summary(self, session_id: str) -> dict[str, Any]:
         state = self.get_session(session_id)
         return {
@@ -1543,7 +1850,13 @@ class MultiAgentSessionService:
 
         dialogue = "\n".join(conversation_text)[:4000]
 
-        prompt = f"""你是一位资深劳动法律顾问。请基于以下对话记录，生成一份专业的法律分析报告。
+        case_snapshot = state.workspace.to_dict()
+        case_prompt = state.legal_analysis_agent.build_prompt_from_case_snapshot(case_snapshot)
+
+        prompt = f"""你是一位资深劳动法律顾问。请基于以下案件状态快照和对话记录，生成一份专业的法律分析报告。
+
+## 稳定案件状态
+{case_prompt}
 
 ## 对话记录
 {dialogue}
@@ -1580,6 +1893,18 @@ class MultiAgentSessionService:
         ts = now_utc_iso()
         state.legal_report_markdown = markdown
         state.legal_report_updated_at_utc = ts
+        self._apply_case_patch(
+            state,
+            state.legal_analysis_agent.build_output_patch(
+                state.workspace,
+                {
+                    "askmore": "no",
+                    "analysis": markdown,
+                    "data": {"schema_version": "1.0", "issues": [], "citations": []},
+                },
+            ),
+            report_events,
+        )
         self._append_event(
             state,
             "report_generated",

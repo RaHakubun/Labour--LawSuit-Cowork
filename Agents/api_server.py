@@ -91,6 +91,15 @@ class SessionEventsResponse(BaseModel):
     events: list[dict[str, Any]]
 
 
+class CaseStateResponse(BaseModel):
+    session_id: str
+    role_id: str
+    case_state: dict[str, Any]
+    case_version: int
+    last_patch_results: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class SessionsListResponse(BaseModel):
     sessions: list[SessionSummaryResponse]
 
@@ -212,6 +221,12 @@ def create_app(service: MultiAgentSessionService | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
         events = service.list_events(session_id)
         return SessionEventsResponse(session_id=session_id, events=events)
+
+    @app.get("/api/v1/sessions/{session_id}/case-state", response_model=CaseStateResponse)
+    def get_case_state(session_id: str) -> CaseStateResponse:
+        if session_id not in service.sessions:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+        return CaseStateResponse(**service.get_case_state(session_id))
 
     @app.get("/api/v1/sessions/{session_id}/legal-report", response_model=LegalReportResponse)
     def get_legal_report(session_id: str) -> LegalReportResponse:

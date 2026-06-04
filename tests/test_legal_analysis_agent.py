@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from Agents.case_state import CaseWorkspace
 from Agents.legal_analysis_agent import LegalAnalysisAgent
 
 
@@ -48,6 +49,26 @@ class FakeMCP:
 
 
 class LegalAnalysisAgentTests(unittest.TestCase):
+    def test_build_prompt_from_case_snapshot_uses_layered_case_state(self):
+        workspace = CaseWorkspace.new(session_id="s1", role_id="worker")
+        workspace.case_state.facts["items"]["employment.monthly_wage"] = {
+            "fact_id": "employment.monthly_wage",
+            "value": 10000,
+            "status": "user_claimed",
+            "source": {"agent": "ScenarioAgent"},
+            "confidence": "C2",
+            "updated_at": "2026-06-04T00:00:00Z",
+        }
+        workspace.case_state.analysis["issues"].append(
+            {"issue_id": "termination", "title": "解除是否合法"}
+        )
+
+        prompt = LegalAnalysisAgent().build_prompt_from_case_snapshot(workspace.to_dict())
+
+        self.assertIn("CaseState Snapshot", prompt)
+        self.assertIn("employment.monthly_wage", prompt)
+        self.assertIn("解除是否合法", prompt)
+
     def test_run_until_done_yes_then_no_with_tool_array(self):
         fake_llm = FakeLLM(
             [

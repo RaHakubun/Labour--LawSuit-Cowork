@@ -69,6 +69,58 @@ class SessionServiceTests(unittest.TestCase):
         self.assertEqual(len(turn.handoffs), 0)
         self.assertGreaterEqual(len(turn.messages), 2)
 
+    def test_case_state_is_initialized_and_updated_by_controller_patch(self):
+        controller_llm = FakeLLM(
+            [
+                (
+                    '{"askmore":"no","user_input":"公司口头辞退我",'
+                    '"analysis":{"scene_id":"termination_layoff","confidence_level":"C3",'
+                    '"escalation_flags":"L1","current_status":"已被口头辞退",'
+                    '"user_appeal":"主张违法解除赔偿","faced_problems":"缺少解除通知和工资基数",'
+                    '"route_plan":"进入解除场景"}}'
+                )
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            controller_template = tmp / "ControllerAgent.md"
+            legal_template = tmp / "LegalAnalysisAgent.md"
+            scenario_root = tmp / "ScenarioAgents"
+            scenario_root.mkdir(parents=True, exist_ok=True)
+            (scenario_root / "termination_layoff.md").write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            controller_template.write_text(
+                "user={user_input}\nctx={conversation_context}\natt={attachments_meta}",
+                encoding="utf-8",
+            )
+            legal_template.write_text(
+                "scene={Scenario_Agent_Input}\nhistory={Tool_Call_History}",
+                encoding="utf-8",
+            )
+            service = MultiAgentSessionService(
+                controller_factory=lambda: Agent(main_prompt="", llm_callable=controller_llm),
+                scenario_factory=lambda: ScenarioAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"yes","ask":"x"}'])),
+                legal_factory=lambda: LegalAnalysisAgent(main_prompt="", llm_callable=FakeLLM(['{"askmore":"no","analysis":"x","data":{"schema_version":"1.0","issues":[{"issue_id":"I1","title":"问题1","conclusion":"结论1","confidence":"C3","citation_ids":["C1"]}],"citations":[{"citation_id":"C1","kind":"law","law_name":"中华人民共和国劳动合同法","article":"第四十条","title":"中华人民共和国劳动合同法第四十条","quote":"条文摘录","source":{"tool_name":"检索法律法规-语义","query":"违法解除条款"}}]}}'])),
+                controller_template_path=str(controller_template),
+                legal_template_path=str(legal_template),
+                scenario_template_root=scenario_root,
+            )
+
+            session = service.create_session("worker")
+            service.submit_turn(session.session_id, "公司口头辞退我")
+            case_payload = service.get_case_state(session.session_id)
+
+        self.assertEqual(case_payload["case_state"]["interaction"]["user_role"], "worker")
+        self.assertEqual(case_payload["case_state"]["interaction"]["current_goal"], "主张违法解除赔偿")
+        self.assertEqual(case_payload["case_state"]["interaction"]["stage"], "controller")
+        self.assertGreaterEqual(case_payload["case_version"], 1)
+        self.assertTrue(
+            any(event["event_type"] == "patch_applied" for event in case_payload["events"])
+        )
+
     def test_full_chain_controller_to_scenario_to_legal(self):
         controller_llm = FakeLLM(
             [
