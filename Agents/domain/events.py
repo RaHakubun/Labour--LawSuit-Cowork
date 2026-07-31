@@ -15,6 +15,7 @@ EVENT_TYPES = frozenset(
         "command.rejected",
         "operation.started",
         "operation.completed",
+        "operation.cancelled",
         "operation.failed",
         "message.received",
         "agent.stage_started",

@@ -111,6 +111,42 @@ class DomainStateManagerTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertIn("fact reference not found", result.errors[0])
 
+    def test_user_confirmation_can_correct_agent_candidate_without_false_conflict(self):
+        candidate = FactItem(
+            fact_id="employment.monthly_wage",
+            value=10000,
+            status=FactStatus.PENDING_VERIFICATION,
+            source=FactSource(kind="agent", ref_id="scenario-1"),
+        )
+        self.assertTrue(
+            self.manager.apply_patch(
+                self.case,
+                CasePatch(
+                    producer="ScenarioAgent",
+                    base_version=0,
+                    operations=[UpsertFact(fact=candidate)],
+                ),
+            ).accepted
+        )
+        corrected = FactItem(
+            fact_id="employment.monthly_wage",
+            value=12000,
+            status=FactStatus.CONFIRMED,
+            source=FactSource(kind="user", ref_id="confirm-command"),
+        )
+        result = self.manager.apply_patch(
+            self.case,
+            CasePatch(
+                producer="User",
+                base_version=1,
+                operations=[UpsertFact(fact=corrected)],
+            ),
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(self.case.state.facts.items[candidate.fact_id].value, 12000)
+        self.assertEqual(self.case.state.facts.items[candidate.fact_id].status, FactStatus.CONFIRMED)
+        self.assertEqual(self.case.state.facts.conflicts, {})
+
 
 if __name__ == "__main__":
     unittest.main()

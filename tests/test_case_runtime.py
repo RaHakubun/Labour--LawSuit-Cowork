@@ -15,7 +15,7 @@ from Agents.application.scenario_models import (
     ScenarioResult,
 )
 from Agents.domain.case_state import CaseStage
-from Agents.domain.commands import SubmitUserMessagePayload
+from Agents.domain.commands import CancelOperationPayload, SubmitUserMessagePayload
 from Agents.infrastructure.memory_uow import InMemoryCaseUnitOfWork
 from Agents.runtime.registry import CaseRuntimeRegistry
 from Agents.services.tool_hub import (
@@ -58,6 +58,15 @@ class BlockingDecisionProvider:
             question="请补充书面解除通知。",
             required_fact_ids=["termination.written_notice"],
         )
+
+
+class CancellableDecisionProvider:
+    def __init__(self):
+        self.started = asyncio.Event()
+
+    async def decide(self, *, case_state, user_input):
+        self.started.set()
+        await asyncio.Event().wait()
 
 
 class TerminationScenarioProvider:
@@ -313,6 +322,51 @@ class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("termination.written_notice", updated.state.facts.items)
         self.assertEqual(events[-2].event_type, "tool.call_failed")
         self.assertEqual(events[-1].event_type, "operation.failed")
+
+    async def test_cancel_operation_stops_uncommitted_work_and_records_terminal_event(self):
+        await self.registry.shutdown(timeout=2)
+        provider = CancellableDecisionProvider()
+        self.registry = CaseRuntimeRegistry(
+            unit_of_work=self.uow,
+            handlers=[self._controller_handler(provider)],
+        )
+        self.service = CaseCommandService(
+            unit_of_work=self.uow,
+            runtime_registry=self.registry,
+        )
+        case = await self.service.create_case(owner_id="worker-cancel", role_id="worker")
+        target = await self.service.submit(
+            case_id=case.case_id,
+            actor_id="worker-cancel",
+            idempotency_key="long-running-message",
+            expected_case_version=0,
+            payload=SubmitUserMessagePayload(text="公司口头辞退我"),
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
+        cancellation = await self.service.submit(
+            case_id=case.case_id,
+            actor_id="worker-cancel",
+            idempotency_key="cancel-long-running-message",
+            expected_case_version=0,
+            payload=CancelOperationPayload(operation_id=target.command.command_id),
+        )
+        runtime = await self.registry.get_or_create(case.case_id)
+        await runtime.wait_idle()
+
+        events = await self.uow.list_events(case.case_id)
+        target_events = [
+            event.event_type
+            for event in events
+            if event.command_id == target.command.command_id
+        ]
+        cancellation_events = [
+            event.event_type
+            for event in events
+            if event.command_id == cancellation.command.command_id
+        ]
+        self.assertEqual(target_events[-1], "operation.cancelled")
+        self.assertEqual(cancellation_events[-1], "operation.completed")
+        self.assertNotIn("clarification.requested", target_events)
 
 
 if __name__ == "__main__":

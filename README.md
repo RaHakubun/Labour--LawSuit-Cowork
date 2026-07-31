@@ -1,6 +1,6 @@
 # Labour Lawsuit Cowork
 
-`lbw` 当前主线是案件级异步事件流后端。每个案件由一个有界 `asyncio.Queue` 串行推进，`CaseRuntime.run()` 以 async generator 产出事件；状态只能通过强类型 `CasePatch` 和 `DomainStateManager` 修改，Postgres 事务同时提交案件版本、快照与严格递增的事件序号。Controller 使用异步 OpenAI-compatible client，API 使用 Bearer token 映射案件所有者，SSE 支持 `Last-Event-ID` 续传。
+`lbw` 当前主线是完整的案件级异步劳动争议工作台。每个案件由有界 `asyncio.Queue` 串行推进，Controller 统一调度 Scenario、证据解析、权威检索、确定性规则计算、LegalAnalysis 与文书生成；状态只能通过强类型 `CasePatch` 和 `DomainStateManager` 修改，Postgres 事务同时提交案件版本、快照、投影与严格递增的事件序号。React 工作台只消费 committed state/events，不在浏览器生成业务结论。
 
 ## 本地启动
 
@@ -23,7 +23,7 @@ set +a
 ./start_project.sh
 ```
 
-启动脚本会先执行 `alembic upgrade head`，再以单 Uvicorn worker 启动 `Agents.async_api:app`。在实现跨进程命令认领前不要增加 worker 数量。当前 `lbw` 不包含 `jobpilot-front`，因此启动脚本会明确只启动后端。
+启动脚本会先执行 `alembic upgrade head`，再以单 Uvicorn worker 启动 `Agents.async_api:app`，并启动 `jobpilot-front`。在实现跨进程命令认领前不要增加 worker 数量。
 
 ## API 主链
 
@@ -52,7 +52,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/cases/CASE_ID/commands \
   }'
 ```
 
-事件流位于 `/api/v1/cases/{case_id}/events`，审计历史位于 `/api/v1/cases/{case_id}/events/history`。SSE 的 `id` 是案件内 sequence；重连时发送 `Last-Event-ID` 即可补发已提交事件。
+证据上传位于 `/api/v1/cases/{case_id}/evidence`，支持 TXT、CSV、JSON、PDF 和 DOCX；事实确认、规则计算、法律分析与文书生成统一提交 typed command。事件流位于 `/api/v1/cases/{case_id}/events`，审计历史位于 `/api/v1/cases/{case_id}/events/history`，产物列表和版本内容位于 `/api/v1/cases/{case_id}/artifacts`。SSE 的 `id` 是案件内 sequence；重连时从最后 sequence 补发已提交事件。
 
 ## 验证
 
@@ -63,4 +63,4 @@ mypy Agents/domain Agents/application Agents/runtime Agents/infrastructure Agent
 alembic upgrade head --sql
 ```
 
-旧 `Agents.api_server` 与 `/api/v1/sessions` 仍保留为迁移期兼容代码，但不再是默认启动主链。后续 Scenario、证据、规则、LegalAnalysis、文书和前端工作的唯一计划基线是 `ASYNC_CASE_RUNTIME_SPEC.md`。
+旧同步 `Agents.api_server`、`MultiAgentSessionService` 与 `/api/v1/sessions` 已删除，业务状态只有异步案件主链能够写入。代码里程碑以 `ASYNC_CASE_RUNTIME_SPEC.md` 为准；真实 PostgreSQL 故障注入与外部 LLM/MCP staging 需要在具备对应服务和受控测试凭据的部署环境执行。

@@ -1,12 +1,12 @@
 # Labour Lawsuit 案件级异步事件流架构迭代 Spec
 
-> 状态：实施中（M0、M1、M2 核心事务层、M3 及 M4 代码主链已落地；真实 PostgreSQL/LLM/MCP staging 验收与 M5–M7 待继续）
+> 状态：代码施工完成（M0–M7 已落地；真实 PostgreSQL 故障注入与 LLM/MCP staging 仍需部署环境验收）
 > 目标分支：`lbw`
 > 基线提交：`311e9a8c7e3f3f722ca5c280c9b38a8635a3cd2e`
 > 适用范围：当前仓库后端，以及后续恢复到仓库中的案件工作台前端
 > 架构决策：采用“ControllerAgent 高层协调 + 案件级异步事件流 + async generator 运行时”。ControllerAgent 是唯一调度中枢，其余领域概念均服务于 Controller 的受控编排；系统内部 Agent 路由不设置用户确认门禁。
 
-> 2026-07-31 实施记录：生产启动入口已切换到 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权、异步 Controller/Scenario adapter、ToolHub 与权威检索 adapter。Controller 的 `route_scenario` 决策会在同一命令中直接驱动 Scenario 和检索，公共命令、状态与事件协议不包含内部 Agent 调度确认。旧 `/sessions` 服务保留为迁移期兼容代码，但不再是 `start_project.sh` 的主入口。当前执行环境没有 PostgreSQL 服务端及真实 LLM/MCP 测试凭据，因此外部 staging 与真实 Postgres 事务故障注入仍未验收；证据解析、规则计算、LegalAnalysis、文书与前端分别按 M5–M7 继续实施。
+> 2026-07-31 实施记录：生产入口为 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权、异步 Controller/Scenario/Legal adapter、ToolHub 与权威检索、隔离证据存储、TXT/CSV/JSON/PDF/DOCX 解析、事实确认、确定性规则计算、分析与仲裁申请书版本化以及 React 案件工作台。Controller 的 `route_scenario` 决策会在同一命令中直接驱动 Scenario 和检索，公共协议不包含内部 Agent 调度确认。旧同步 `/sessions` 主链及对应实现已删除。当前执行环境没有 PostgreSQL 服务端及真实 LLM/MCP 测试凭据，因此外部 staging 与真实 Postgres 事务故障注入仍未验收。
 
 ## 1. 决策摘要
 
@@ -32,7 +32,7 @@ async generator 在本架构中的职责是统一“执行与增量产出”：�
 | MCP | `requests.Session` 同步调用，Scenario 内部循环重试 | ToolHub 改为异步端口；重试只对明确可重试的网络错误生效，业务错误立即失败并事件化 |
 | 法律分析 | Scenario 输出自由 JSON，Legal 以其和拼接 history 为主输入 | 改为只从受控 CaseSnapshot、AuthorityRef、RuleResult、EvidenceRef 生成分析和文书 patch |
 | 附件 | 上传落盘，但附件元数据与解析、证据状态未形成闭环 | 建立 EvidenceUploaded → EvidenceParsed → EvidencePatchApplied 完整链路 |
-| 前端 | `AGENTS.md` 和报告声称存在 `jobpilot-front` | `lbw` 实际不包含前端目录；前端验收必须等源码恢复，禁止继续将 C 阶段标为完成 |
+| 前端 | React + Vite 案件工作台 | 已恢复并接入 command/query/SSE/evidence/artifact 契约，build 与 lint 纳入发布门禁 |
 | RAG | API 尝试挂载 `rag_app` 并吞掉全部异常 | `lbw` 不包含 `rag_app`；删除宽泛异常吞并，能力未配置时在启动期明确暴露 |
 | 依赖 | 启动脚本假设环境已安装 | 当前缺 `pyproject.toml`/锁文件，无法可靠复现；必须补齐 |
 | 安全 | 公开仓库中存在硬编码凭据、会话快照和不安全文件名 | 在运行时重构前完成密钥撤销与历史治理；上传文件仅使用服务端 ID 和经过清洗的展示名 |
@@ -120,7 +120,7 @@ class EventEnvelope(BaseModel):
 
 `sequence` 是案件内严格递增序号，也是 SSE 恢复游标。`case_version` 只在状态补丁成功后增加；token、阶段进度等瞬时事件不会随意改变案件版本。`visibility=internal` 的事件用于审计和派生，不能未经投影直接发给前端。
 
-首轮事件字典必须冻结为以下集合：`command.accepted`、`command.rejected`、`operation.started`、`operation.completed`、`operation.failed`、`message.received`、`agent.stage_started`、`agent.token_delta`、`agent.output_received`、`tool.call_started`、`tool.call_completed`、`tool.call_failed`、`patch.submitted`、`patch.applied`、`patch.rejected`、`state.transitioned`、`clarification.requested`、`evidence.registered`、`evidence.parsed`、`fact.confirmation_requested`、`fact.confirmed`、`analysis.updated`、`artifact.generated`。内部 Agent 路由以 `state.transitioned` 和 `agent.stage_started` 表达，不建立独立的 Agent 交接事件族。新增事件必须先更新 schema 和兼容性测试。
+首轮事件字典必须冻结为以下集合：`command.accepted`、`command.rejected`、`operation.started`、`operation.completed`、`operation.cancelled`、`operation.failed`、`message.received`、`agent.stage_started`、`agent.token_delta`、`agent.output_received`、`tool.call_started`、`tool.call_completed`、`tool.call_failed`、`patch.submitted`、`patch.applied`、`patch.rejected`、`state.transitioned`、`clarification.requested`、`evidence.registered`、`evidence.parsed`、`fact.confirmation_requested`、`fact.confirmed`、`analysis.updated`、`artifact.generated`。内部 Agent 路由以 `state.transitioned` 和 `agent.stage_started` 表达，不建立独立的 Agent 交接事件族。新增事件必须先更新 schema 和兼容性测试。
 
 ## 6. CaseRuntime 与 async generator
 
@@ -301,7 +301,7 @@ Agents/
     context_builders.py
 ```
 
-现有 `Agent`、`ScenarioAgent` 和 `LegalAnalysisAgent` 可先保留推理与 payload 解析代码，但会由 application handler 调用；完成迁移后删除它们对 conversation list、MCP client 和 callback 的直接持有。`MultiAgentSessionService` 在兼容 API 迁移完成后删除，不形成新旧双主链路。
+旧同步 `Agent`、`ScenarioAgent`、`LegalAnalysisAgent`、`MultiAgentSessionService` 和 `/sessions` API 已在 M7 删除；当前只保留 application handler、typed provider 与异步 adapter 主链，不形成新旧双写。
 
 项目根目录补齐 `pyproject.toml`、锁文件、`.env.example`、`.gitignore`、Alembic 配置和明确启动命令。依赖至少覆盖 FastAPI、Uvicorn、Pydantic v2、SQLAlchemy 2、asyncpg、Alembic、httpx、python-multipart、测试异步支持和静态检查；版本必须锁定。
 
@@ -327,15 +327,15 @@ Agents/
 
 实现 typed ControllerDecision、ScenarioResult、模板完整性启动校验、异步 LLM adapter、ToolHub 和权威检索结果模型；删除三轮追问后的合成分析 fallback。完成标志是 intake → clarification，或 Controller 直接调度 scenario → authority retrieval 的业务路径能在同一命令中以真实事件推进，MCP 失败不会产生无依据结论。
 
-### M5：证据、规则与事实确认闭环
+### M5：证据、规则与事实确认闭环（已完成）
 
 实现文件登记、解析、哈希、证据事实链接、冲突事实确认和 RuleCalculator command。完成标志是用户上传劳动合同/工资材料后能看到解析状态、候选事实及确认动作，确认后 case version 更新，依赖旧事实的分析被正确标记需刷新。
 
-### M6：LegalAnalysis 与文书产物
+### M6：LegalAnalysis 与文书产物（已完成）
 
 实现受控 context builder、引用验证、争议焦点、分析更新和文书 artifact revision。首批文书至少完成“法律分析报告”和“劳动仲裁申请书”，不是只创建通用 Markdown 占位模板。完成标志是每项结论可追溯到事实、证据和权威来源，新增事实后旧产物 stale，新产物保留版本历史。
 
-### M7：API 收敛与前端工作台
+### M7：API 收敛与前端工作台（已完成）
 
 将现有 route 迁移到 command/SSE/query 契约，恢复并接入真实前端源码，完成对话区、事实确认区、证据区、争议焦点区、文书区和运行状态区。完成标志是前端不生成业务结论、不展示裸内部 JSON，可处理重连、pending action、失败事件和产物版本。若前端源码尚未恢复，本阶段不得打勾。
 

@@ -42,12 +42,21 @@ class ApiAuthorityAdapter:
         )
 
 
+class UnusedLegalProvider:
+    async def analyze(self, *, context):
+        raise AssertionError("legal provider is not used in these API tests")
+
+    async def draft_document(self, *, context, document_type):
+        raise AssertionError("legal provider is not used in these API tests")
+
+
 class AsyncCaseApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.app = create_async_case_app(
             decision_provider=TerminationController(),
             scenario_provider=ApiScenarioProvider(),
             tool_hub=ToolHub(ApiAuthorityAdapter()),
+            legal_provider=UnusedLegalProvider(),
             authenticator=BearerTokenAuthenticator(
                 {
                     "worker-one-token": "worker-1",
@@ -145,15 +154,66 @@ class AsyncCaseApiTests(unittest.IsolatedAsyncioTestCase):
                 "idempotency_key": "invalid-internal-routing-command",
                 "expected_case_version": 0,
                 "payload": {
-                    "command_type": "confirm_handoff",
-                    "handoff_id": "2f5e17c4-16c4-488c-a337-fb043cfe6e18",
-                    "approve": True,
+                    "command_type": "switch_agent",
+                    "agent_name": "ScenarioAgent",
                 },
             },
         )
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["detail"]["code"], "invalid_command")
+
+    async def test_evidence_upload_is_parsed_and_case_list_is_owner_scoped(self):
+        create = await self.client.post(
+            "/api/v1/cases",
+            headers=self.headers,
+            json={"role_id": "worker"},
+        )
+        case_id = create.json()["case_id"]
+        upload = await self.client.post(
+            f"/api/v1/cases/{case_id}/evidence",
+            headers=self.headers,
+            params={
+                "idempotency_key": "contract-upload-1",
+                "expected_case_version": 0,
+            },
+            files={
+                "file": (
+                    "../工资证明.txt",
+                    "用人单位：示例公司\n月工资：12000元\n解除日期：2026-07-20".encode(),
+                    "text/plain",
+                )
+            },
+        )
+        self.assertEqual(upload.status_code, 202)
+        runtime = await self.app.state.runtime_registry.get_or_create(UUID(case_id))
+        await runtime.wait_idle()
+        duplicate = await self.client.post(
+            f"/api/v1/cases/{case_id}/evidence",
+            headers=self.headers,
+            params={
+                "idempotency_key": "contract-upload-1",
+                "expected_case_version": 0,
+            },
+            files={
+                "file": (
+                    "工资证明.txt",
+                    "月工资：12000元".encode(),
+                    "text/plain",
+                )
+            },
+        )
+
+        current = await self.client.get(f"/api/v1/cases/{case_id}", headers=self.headers)
+        cases = await self.client.get("/api/v1/cases", headers=self.headers)
+
+        self.assertEqual(current.json()["evidence"][0]["status"], "parsed")
+        self.assertTrue(duplicate.json()["idempotent_replay"])
+        self.assertEqual(duplicate.json()["evidence_id"], upload.json()["evidence_id"])
+        self.assertNotIn("..", current.json()["evidence"][0]["display_name"])
+        fact_ids = {item["fact_id"] for item in current.json()["candidate_facts"]}
+        self.assertIn("employment.monthly_wage", fact_ids)
+        self.assertEqual([item["case_id"] for item in cases.json()["cases"]], [case_id])
 
 
 if __name__ == "__main__":

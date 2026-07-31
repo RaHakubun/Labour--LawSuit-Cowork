@@ -9,6 +9,10 @@ from pydantic import TypeAdapter, ValidationError
 
 from Agents.application.decisions import ControllerDecision
 from Agents.application.scenario_models import ScenarioResult
+from Agents.application.legal_models import (
+    DocumentDraftResult,
+    LegalAnalysisResult,
+)
 from Agents.domain.case_state import CaseState
 from Agents.scene_catalog import (
     get_role_scene_template_path,
@@ -22,6 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTROLLER_TEMPLATE = PROJECT_ROOT / "Prompt_Template" / "ControllerAgent.md"
 _DECISION_ADAPTER: TypeAdapter[ControllerDecision] = TypeAdapter(ControllerDecision)
 _SCENARIO_RESULT_ADAPTER: TypeAdapter[ScenarioResult] = TypeAdapter(ScenarioResult)
+_LEGAL_RESULT_ADAPTER: TypeAdapter[LegalAnalysisResult] = TypeAdapter(LegalAnalysisResult)
+_DOCUMENT_RESULT_ADAPTER: TypeAdapter[DocumentDraftResult] = TypeAdapter(DocumentDraftResult)
 
 
 def _parse_json_object(text: str, *, actor_name: str) -> dict[str, Any]:
@@ -197,3 +203,101 @@ class AsyncOpenAIScenarioResultProvider:
                 f"ScenarioAgent returned scene_id={result.scene_id}, expected {scene}"
             )
         return result
+
+
+class AsyncOpenAILegalResultProvider:
+    """Legal adapter restricted to the context builder projection and typed outputs."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float = 120.0,
+    ) -> None:
+        self._base_url = (base_url or os.getenv("LLM_BASE_URL") or "").strip()
+        self._api_key = (api_key or os.getenv("LLM_API_KEY") or "").strip()
+        self._model = (model or os.getenv("LLM_MODEL") or "").strip()
+        self._timeout_seconds = timeout_seconds
+        if not self._base_url:
+            raise RuntimeError("LLM_BASE_URL is required")
+        if not self._api_key:
+            raise RuntimeError("LLM_API_KEY is required")
+        if not self._model:
+            raise RuntimeError("LLM_MODEL is required")
+
+    async def analyze(self, *, context: dict[str, object]) -> LegalAnalysisResult:
+        contract = (
+            "只输出 JSON，不得输出 Markdown 代码围栏。结构必须为："
+            '{"summary":"...","report_markdown":"## 简要回复\\n...",'
+            '"issues":[{"title":"...","conclusion":"...","fact_ids":["..."],'
+            '"evidence_ids":[],"authority_ids":["UUID"]}]}。'
+            "每项结论必须引用输入中真实存在的事实 ID 和 authority UUID；"
+            "不得生成新事实、法条或来源。"
+        )
+        payload = await self._complete(
+            actor_name="LegalAnalysisAgent",
+            prompt=self._legal_prompt(context, contract),
+        )
+        try:
+            return _LEGAL_RESULT_ADAPTER.validate_python(payload)
+        except ValidationError as exc:
+            raise ValueError(f"LegalAnalysisAgent protocol violation: {exc}") from exc
+
+    async def draft_document(
+        self,
+        *,
+        context: dict[str, object],
+        document_type: str,
+    ) -> DocumentDraftResult:
+        label = {
+            "legal_analysis_report": "法律分析报告",
+            "labour_arbitration_application": "劳动仲裁申请书",
+        }[document_type]
+        contract = (
+            f"生成完整的{label}，只输出 JSON，不得输出 Markdown 代码围栏。结构必须为："
+            '{"title":"...","content":"...","fact_ids":["..."],'
+            '"evidence_ids":[],"authority_ids":["UUID"],"rule_result_ids":[]}。'
+            "引用 ID 必须来自输入；劳动仲裁申请书必须包含当事人、仲裁请求、事实与理由、"
+            "证据目录和落款字段，对缺失身份信息使用明确待填写标记，不得虚构。"
+        )
+        payload = await self._complete(
+            actor_name="DocumentDraftAgent",
+            prompt=self._legal_prompt(context, contract),
+        )
+        try:
+            return _DOCUMENT_RESULT_ADAPTER.validate_python(payload)
+        except ValidationError as exc:
+            raise ValueError(f"DocumentDraftAgent protocol violation: {exc}") from exc
+
+    def _legal_prompt(self, context: dict[str, object], contract: str) -> str:
+        template = (PROJECT_ROOT / "Prompt_Template" / "LegalAnalysisAgent.md").read_text(
+            encoding="utf-8"
+        )
+        return (
+            template
+            + "\n\n以下是经过权限过滤和状态标注的唯一案件上下文：\n"
+            + json.dumps(context, ensure_ascii=False)
+            + "\n\n"
+            + contract
+        )
+
+    async def _complete(self, *, actor_name: str, prompt: str) -> dict[str, Any]:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise ImportError("Install the openai dependency to run legal generation") from exc
+        client = AsyncOpenAI(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout_seconds,
+        )
+        response = await client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _parse_json_object(
+            response.choices[0].message.content or "",
+            actor_name=actor_name,
+        )

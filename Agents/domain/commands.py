@@ -24,10 +24,29 @@ class ConfirmFactPayload(StrictModel):
 class RegisterEvidencePayload(StrictModel):
     command_type: Literal["register_evidence"] = "register_evidence"
     evidence_id: UUID
+    display_name: str = Field(min_length=1)
+    storage_key: str = Field(min_length=1)
+    media_type: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
 
 
 class RequestAnalysisPayload(StrictModel):
     command_type: Literal["request_analysis"] = "request_analysis"
+
+
+class CalculateRulePayload(StrictModel):
+    command_type: Literal["calculate_rule"] = "calculate_rule"
+    calc_type: Literal[
+        "wage_base",
+        "overtime",
+        "severance",
+        "medical_period",
+        "annual_leave_unused",
+        "double_wage_unsigned_contract",
+    ]
+    inputs: dict[str, object]
+    fact_ids: list[str] = Field(default_factory=list)
 
 
 class RequestDocumentPayload(StrictModel):
@@ -44,6 +63,7 @@ CommandPayload = Annotated[
     SubmitUserMessagePayload
     | ConfirmFactPayload
     | RegisterEvidencePayload
+    | CalculateRulePayload
     | RequestAnalysisPayload
     | RequestDocumentPayload
     | CancelOperationPayload,

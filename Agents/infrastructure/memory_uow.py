@@ -7,6 +7,7 @@ from uuid import UUID
 from Agents.application.handlers.base import ExecutionBatch
 from Agents.domain.case_state import CaseAggregate
 from Agents.domain.commands import CaseCommand
+from Agents.domain.commands import CancelOperationPayload
 from Agents.domain.events import EventDraft, EventEnvelope
 from Agents.domain.state_manager import DomainStateManager
 from Agents.infrastructure.uow import AcceptCommandResult
@@ -40,6 +41,14 @@ class InMemoryCaseUnitOfWork:
         async with data.lock:
             return data.aggregate.model_copy(deep=True)
 
+    async def list_cases(self, owner_id: str) -> list[CaseAggregate]:
+        aggregates = [
+            data.aggregate.model_copy(deep=True)
+            for data in self._cases.values()
+            if data.aggregate.owner_id == owner_id
+        ]
+        return sorted(aggregates, key=lambda item: item.updated_at, reverse=True)
+
     async def accept_command(self, command: CaseCommand) -> AcceptCommandResult:
         data = self._require(command.case_id)
         async with data.lock:
@@ -51,7 +60,10 @@ class InMemoryCaseUnitOfWork:
                     item for item in data.events if item.command_id == existing.command_id
                 ]
                 return AcceptCommandResult(existing, False, existing_events)
-            if command.expected_case_version != data.aggregate.version:
+            if (
+                not isinstance(command.payload, CancelOperationPayload)
+                and command.expected_case_version != data.aggregate.version
+            ):
                 raise ValueError(
                     f"expected_case_version={command.expected_case_version} does not "
                     f"match case version={data.aggregate.version}"
@@ -121,12 +133,19 @@ class InMemoryCaseUnitOfWork:
         command: CaseCommand,
         *,
         error: Exception | None = None,
+        cancelled: bool = False,
     ) -> EventEnvelope:
         data = self._require(command.case_id)
         async with data.lock:
-            status = "failed" if error else "completed"
+            status = "cancelled" if cancelled else "failed" if error else "completed"
             data.command_status[command.command_id] = status
-            event_type = "operation.failed" if error else "operation.completed"
+            event_type = (
+                "operation.cancelled"
+                if cancelled
+                else "operation.failed"
+                if error
+                else "operation.completed"
+            )
             payload = (
                 {
                     "code": type(error).__name__,
@@ -134,7 +153,7 @@ class InMemoryCaseUnitOfWork:
                     "retryable": False,
                 }
                 if error
-                else {"status": "completed"}
+                else {"status": status}
             )
             return self._append_event(
                 data,

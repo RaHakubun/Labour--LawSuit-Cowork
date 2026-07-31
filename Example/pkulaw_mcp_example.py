@@ -5,12 +5,11 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from utils.pkulaw_mcp_client import mcp_query
-from utils.pkulaw_mcp_catalog import load_catalog
+from utils.pkulaw_mcp_client import mcp_query  # noqa: E402
+from utils.pkulaw_mcp_catalog import load_catalog  # noqa: E402
 
 
 BASE_URL = "<YOUR_BASE_URL>"
-TOKEN = "37d1a844-17b8-37b0-a34c-7132e7de8950"
 ##
 #可以调用的MCP服务
 # 检索法律法规-语义
@@ -29,8 +28,11 @@ def run_mcp_query(
     service_name="检索法律法规-语义",
     query="租房合同纠纷应该适用哪些法律条款？",
 ) -> str:
+    token = os.getenv("PKULAW_MCP_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("PKULAW_MCP_TOKEN is required")
     catalog = load_catalog()
-    return mcp_query(service_name, query, token=TOKEN, catalog=catalog)
+    return mcp_query(service_name, query, token=token, catalog=catalog)
 
 
 

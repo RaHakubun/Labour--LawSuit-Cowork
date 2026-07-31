@@ -22,6 +22,8 @@ class CaseUnitOfWork(Protocol):
 
     async def get_case(self, case_id: UUID) -> CaseAggregate: ...
 
+    async def list_cases(self, owner_id: str) -> list[CaseAggregate]: ...
+
     async def accept_command(self, command: CaseCommand) -> AcceptCommandResult: ...
 
     async def commit_batch(
@@ -35,6 +37,7 @@ class CaseUnitOfWork(Protocol):
         command: CaseCommand,
         *,
         error: Exception | None = None,
+        cancelled: bool = False,
     ) -> EventEnvelope: ...
 
     async def list_events(

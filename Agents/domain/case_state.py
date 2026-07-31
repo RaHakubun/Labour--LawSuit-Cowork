@@ -113,6 +113,9 @@ class EvidenceItem(StrictModel):
     size: int = Field(ge=0)
     status: EvidenceStatus = EvidenceStatus.REGISTERED
     extracted_text_ref: str = ""
+    extracted_text: str = ""
+    parser_name: str = ""
+    parsed_at: datetime | None = None
     linked_fact_ids: list[str] = Field(default_factory=list)
     authenticity_risk: str = ""
 
@@ -154,6 +157,8 @@ class RuleResult(StrictModel):
     result: dict[str, Any]
     unit: str = ""
     rounding: str = ""
+    fact_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class AnalysisState(StrictModel):
@@ -172,6 +177,7 @@ class ArtifactRevision(StrictModel):
     fact_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[UUID] = Field(default_factory=list)
     authority_ids: list[UUID] = Field(default_factory=list)
+    rule_result_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 

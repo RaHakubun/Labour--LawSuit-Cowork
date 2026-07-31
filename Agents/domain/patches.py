@@ -46,6 +46,11 @@ class RegisterEvidence(StrictModel):
     evidence: EvidenceItem
 
 
+class UpdateEvidence(StrictModel):
+    operation_type: Literal["update_evidence"] = "update_evidence"
+    evidence: EvidenceItem
+
+
 class LinkEvidenceToFact(StrictModel):
     operation_type: Literal["link_evidence_to_fact"] = "link_evidence_to_fact"
     evidence_id: UUID
@@ -77,6 +82,7 @@ CasePatchOperation = Annotated[
     | UpsertFact
     | ResolveFactConflict
     | RegisterEvidence
+    | UpdateEvidence
     | LinkEvidenceToFact
     | UpsertIssue
     | AddAuthority

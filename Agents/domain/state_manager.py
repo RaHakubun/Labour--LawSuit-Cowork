@@ -20,6 +20,7 @@ from .patches import (
     LinkEvidenceToFact,
     PatchResult,
     RegisterEvidence,
+    UpdateEvidence,
     ResolveFactConflict,
     SetInteraction,
     UpsertFact,
@@ -31,11 +32,11 @@ from .transitions import validate_transition
 PRODUCER_OPERATIONS: dict[str, set[type[CasePatchOperation]]] = {
     "ControllerAgent": {SetInteraction, UpsertFact},
     "ScenarioAgent": {SetInteraction, UpsertFact, AddAuthority},
-    "EvidenceParser": {RegisterEvidence, LinkEvidenceToFact, UpsertFact},
+    "EvidenceParser": {RegisterEvidence, UpdateEvidence, LinkEvidenceToFact, UpsertFact},
     "RuleCalculator": {AddRuleResult},
     "LegalAnalysisAgent": {SetInteraction, UpsertIssue, AddArtifactRevision},
     "StateManager": {SetInteraction, ResolveFactConflict},
-    "User": {SetInteraction, ResolveFactConflict},
+    "User": {SetInteraction, ResolveFactConflict, UpsertFact},
 }
 
 
@@ -117,6 +118,9 @@ class DomainStateManager:
                 yield f"evidence not found: {operation.evidence_id}"
             if operation.fact_id not in aggregate.state.facts.items:
                 yield f"fact not found: {operation.fact_id}"
+        elif isinstance(operation, UpdateEvidence):
+            if operation.evidence.evidence_id not in aggregate.state.evidence.items:
+                yield f"evidence not found: {operation.evidence.evidence_id}"
         elif isinstance(operation, UpsertIssue):
             yield from self._validate_references(
                 aggregate,
@@ -137,6 +141,9 @@ class DomainStateManager:
                         f"artifact revision case_version={revision.case_version} does not "
                         f"match case version={aggregate.version}"
                     )
+                for result_id in revision.rule_result_ids:
+                    if result_id not in aggregate.state.analysis.rule_results:
+                        yield f"rule result reference not found: {result_id}"
 
     def _validate_references(
         self,
@@ -188,6 +195,10 @@ class DomainStateManager:
             incoming = operation.fact
             existing = state.facts.items.get(incoming.fact_id)
             if existing is not None and existing.value != incoming.value:
+                if producer == "User" and incoming.status is FactStatus.CONFIRMED:
+                    state.facts.items[incoming.fact_id] = incoming
+                    self._mark_outputs_stale(state)
+                    return
                 existing.status = FactStatus.DISPUTED
                 conflict = FactConflict(
                     fact_id=incoming.fact_id,
@@ -214,6 +225,11 @@ class DomainStateManager:
             if evidence.evidence_id in state.evidence.items:
                 raise ValueError(f"evidence already registered: {evidence.evidence_id}")
             state.evidence.items[evidence.evidence_id] = evidence
+            return
+
+        if isinstance(operation, UpdateEvidence):
+            state.evidence.items[operation.evidence.evidence_id] = operation.evidence
+            self._mark_outputs_stale(state)
             return
 
         if isinstance(operation, LinkEvidenceToFact):

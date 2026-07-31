@@ -13,6 +13,7 @@ jobpilot-front/dist/
 jobpilot-front/.npm-cache/
 storage/sessions/*.json
 storage/uploads/
+storage/evidence/
 storage/rag.db
 storage/pdf_text/
 *.log

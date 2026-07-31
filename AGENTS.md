@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `Agents/`: backend agent orchestration and API (`session_service.py`, `api_server.py`, scenario/legal/controller agents, presentation adapters).
+- `Agents/`: typed domain, application handlers, asynchronous runtime, API, adapters and persistence.
 - `Prompt_Template/`: prompt templates for Controller, LegalAnalysis, and Scenario agents. Do not change templates unless explicitly required.
 - `utils/`: deterministic business logic (notably labour-law calculator and city wage dataset loaders).
 - `tests/`: Python `unittest` suite for backend logic, contracts, adapters, API, and calculators.
@@ -13,7 +13,7 @@
 - Full stack start (recommended):
   - `./start_project.sh`
 - Backend only:
-  - `python -m uvicorn Agents.api_server:app --host 0.0.0.0 --port 8000 --reload`
+  - `python -m uvicorn Agents.async_api:app --host 0.0.0.0 --port 8000 --reload`
 - Backend tests:
   - `python -m unittest discover -s tests -p 'test_*.py' -v`
 - Frontend:

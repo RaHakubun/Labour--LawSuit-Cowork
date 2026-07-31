@@ -9,13 +9,6 @@ BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
-# ── 可选 RAG 知识库子应用配置 ─────────────────────────────────────────────────
-export SILICONFLOW_MODEL="${SILICONFLOW_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"
-export KNOWLEDGE_ROOT="${KNOWLEDGE_ROOT:-${HOME}/Documents/rag-skill/knowledge}"
-export APP_DATABASE_PATH="${APP_DATABASE_PATH:-${ROOT_DIR}/storage/rag.db}"
-export PDF_CACHE_DIR="${PDF_CACHE_DIR:-${ROOT_DIR}/storage/pdf_text}"
-# ─────────────────────────────────────────────────────────────────────────────
-
 ensure_command() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -43,11 +36,6 @@ for required_var in LLM_BASE_URL LLM_API_KEY LLM_MODEL DATABASE_URL APP_API_TOKE
     exit 1
   fi
 done
-
-if [[ "${ENABLE_RAG:-}" =~ ^(1|true|yes)$ ]] && [[ -z "${SILICONFLOW_API_KEY:-}" ]]; then
-  echo "[ERROR] SILICONFLOW_API_KEY is required when ENABLE_RAG is enabled."
-  exit 1
-fi
 
 resolve_python_bin() {
   # Prefer the active env interpreter (usually `python` in conda/venv).
@@ -164,9 +152,6 @@ if [[ "${START_FRONTEND}" -eq 1 ]]; then
   echo "[INFO] Frontend:      http://localhost:${FRONTEND_PORT}"
 fi
 echo "[INFO] Backend:       http://127.0.0.1:${BACKEND_PORT}/api/v1/health"
-if [[ "${ENABLE_RAG:-}" =~ ^(1|true|yes)$ ]]; then
-  echo "[INFO] 知识库对话:    http://127.0.0.1:${BACKEND_PORT}/rag"
-fi
 echo "[INFO] Press Ctrl+C to stop both."
 
 if [[ "${START_FRONTEND}" -eq 1 ]]; then

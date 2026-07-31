@@ -1,6 +1,6 @@
 # 劳动法多 Agent 系统前后端一体化报告
 
-> 历史报告，已停止作为完成度基线。本文描述的 `jobpilot-front`、RAG 和若干集成完成项与当前 `lbw` 文件树不一致；自 2026-07-31 起，实施与验收以 `ASYNC_CASE_RUNTIME_SPEC.md`、实际代码和自动化验证结果为准。
+> 历史报告，已停止作为完成度基线。当前实现以 `ASYNC_CASE_RUNTIME_SPEC.md`、`Agents.async_api:app` 和新 `jobpilot-front` 为准；本文描述的旧 `/sessions`、同步 SessionService、同步 EventBus 与内部 handoff 架构均已删除。
 
 ## 1. 报告目的
 - 明确当前 `jobpilot-front` 与现有后端 Agent/工具能力的真实匹配度。

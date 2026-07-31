@@ -7,11 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from Agents.application.handlers.base import ExecutionBatch
 from Agents.domain.case_state import CaseAggregate, utc_now
-from Agents.domain.commands import CaseCommand
+from Agents.domain.commands import CancelOperationPayload, CaseCommand
 from Agents.domain.events import EventDraft, EventEnvelope
 from Agents.domain.state_manager import DomainStateManager
 
-from .database import CaseCommandRow, CaseEventRow, CaseRow, CaseSnapshotRow
+from .database import (
+    ArtifactRow,
+    CaseCommandRow,
+    CaseEventRow,
+    CaseRow,
+    CaseSnapshotRow,
+    EvidenceFileRow,
+    MessageRow,
+)
 from .uow import AcceptCommandResult
 
 
@@ -60,6 +68,17 @@ class PostgresCaseUnitOfWork:
                 raise KeyError(f"case not found: {case_id}")
             return CaseAggregate.model_validate(row.state_json)
 
+    async def list_cases(self, owner_id: str) -> list[CaseAggregate]:
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(CaseRow)
+                    .where(CaseRow.owner_id == owner_id)
+                    .order_by(CaseRow.updated_at.desc())
+                )
+            ).all()
+            return [CaseAggregate.model_validate(row.state_json) for row in rows]
+
     async def accept_command(self, command: CaseCommand) -> AcceptCommandResult:
         async with self._session_factory.begin() as session:
             case_row = await self._locked_case(session, command.case_id)
@@ -75,7 +94,10 @@ class PostgresCaseUnitOfWork:
                 existing = CaseCommand.model_validate(existing_row.command_json)
                 events = await self._events_for_command(session, existing.command_id)
                 return AcceptCommandResult(existing, False, events)
-            if command.expected_case_version != case_row.version:
+            if (
+                not isinstance(command.payload, CancelOperationPayload)
+                and command.expected_case_version != case_row.version
+            ):
                 raise ValueError(
                     f"expected_case_version={command.expected_case_version} does not "
                     f"match case version={case_row.version}"
@@ -150,6 +172,7 @@ class PostgresCaseUnitOfWork:
                         created_at=aggregate.updated_at,
                     )
                 )
+                await self._sync_projections(session, aggregate)
                 committed.append(
                     self._append_event(
                         session,
@@ -168,29 +191,80 @@ class PostgresCaseUnitOfWork:
                     )
                 )
             for draft in batch.events:
-                committed.append(
-                    self._append_event(
+                envelope = self._append_event(
                         session,
                         case_row,
                         command,
                         draft,
                         case_version=aggregate.version,
                     )
-                )
+                committed.append(envelope)
+                if draft.event_type == "message.received":
+                    session.add(
+                        MessageRow(
+                            case_id=command.case_id,
+                            command_id=command.command_id,
+                            event_id=envelope.event_id,
+                            speaker=command.actor_id,
+                            content=str(draft.payload.get("text", "")),
+                            created_at=envelope.occurred_at,
+                        )
+                    )
             return committed
+
+    async def _sync_projections(
+        self,
+        session: AsyncSession,
+        aggregate: CaseAggregate,
+    ) -> None:
+        for evidence in aggregate.state.evidence.items.values():
+            await session.merge(
+                EvidenceFileRow(
+                    evidence_id=evidence.evidence_id,
+                    case_id=aggregate.case_id,
+                    storage_key=evidence.storage_key,
+                    display_name=evidence.display_name,
+                    media_type=evidence.media_type,
+                    sha256=evidence.sha256,
+                    size=evidence.size,
+                    status=evidence.status.value,
+                    metadata_json=evidence.model_dump(mode="json"),
+                    created_at=aggregate.created_at,
+                    updated_at=aggregate.updated_at,
+                )
+            )
+        for artifact in aggregate.state.outputs.artifacts.values():
+            await session.merge(
+                ArtifactRow(
+                    artifact_id=artifact.artifact_id,
+                    case_id=aggregate.case_id,
+                    artifact_type=artifact.artifact_type,
+                    title=artifact.title,
+                    stale=artifact.stale,
+                    revisions_json=[
+                        revision.model_dump(mode="json")
+                        for revision in artifact.revisions
+                    ],
+                    created_at=artifact.revisions[0].created_at,
+                    updated_at=artifact.revisions[-1].created_at,
+                )
+            )
 
     async def finish_command(
         self,
         command: CaseCommand,
         *,
         error: Exception | None = None,
+        cancelled: bool = False,
     ) -> EventEnvelope:
         async with self._session_factory.begin() as session:
             case_row = await self._locked_case(session, command.case_id)
             command_row = await session.get(CaseCommandRow, command.command_id)
             if command_row is None:
                 raise KeyError(f"command not found: {command.command_id}")
-            command_row.status = "failed" if error else "completed"
+            command_row.status = (
+                "cancelled" if cancelled else "failed" if error else "completed"
+            )
             command_row.completed_at = utc_now()
             command_row.error_json = (
                 {
@@ -206,10 +280,17 @@ class PostgresCaseUnitOfWork:
                 case_row,
                 command,
                 EventDraft(
-                    event_type="operation.failed" if error else "operation.completed",
+                    event_type=(
+                        "operation.cancelled"
+                        if cancelled
+                        else "operation.failed"
+                        if error
+                        else "operation.completed"
+                    ),
                     producer="CaseRuntime",
                     visibility="user",
-                    payload=command_row.error_json or {"status": "completed"},
+                    payload=command_row.error_json
+                    or {"status": "cancelled" if cancelled else "completed"},
                 ),
                 case_version=case_row.version,
             )
