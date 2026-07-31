@@ -174,14 +174,12 @@ class DomainStateManager:
                 interaction.active_agent = operation.active_agent
             if operation.current_goal is not None:
                 interaction.current_goal = operation.current_goal
+            if operation.active_scene_id is not None:
+                interaction.active_scene_id = operation.active_scene_id
             if operation.last_user_input is not None:
                 interaction.last_user_input = operation.last_user_input
             if operation.pending_questions is not None:
                 interaction.pending_questions = operation.pending_questions
-            if operation.pending_handoff is not None:
-                interaction.pending_handoff = operation.pending_handoff
-            if operation.clear_pending_handoff:
-                interaction.pending_handoff = None
             if operation.blocked_on is not None:
                 interaction.blocked_on = operation.blocked_on
             return

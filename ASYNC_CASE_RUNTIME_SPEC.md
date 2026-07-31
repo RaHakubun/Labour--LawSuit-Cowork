@@ -1,18 +1,18 @@
 # Labour Lawsuit 案件级异步事件流架构迭代 Spec
 
-> 状态：实施中（M0、M1、M2 核心事务层及 M3 首个纵向切片已落地；M4–M7 待继续）
+> 状态：实施中（M0、M1、M2 核心事务层、M3 及 M4 代码主链已落地；真实 PostgreSQL/LLM/MCP staging 验收与 M5–M7 待继续）
 > 目标分支：`lbw`
 > 基线提交：`311e9a8c7e3f3f722ca5c280c9b38a8635a3cd2e`
 > 适用范围：当前仓库后端，以及后续恢复到仓库中的案件工作台前端
-> 架构决策：采用“案件级异步事件流 + async generator 运行时”，而不是把 async generator 误当成全部业务架构
+> 架构决策：采用“ControllerAgent 高层协调 + 案件级异步事件流 + async generator 运行时”。ControllerAgent 是唯一调度中枢，其余领域概念均服务于 Controller 的受控编排；系统内部 Agent 路由不设置用户确认门禁。
 
-> 2026-07-31 实施记录：生产启动入口已切换到 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权和异步 Controller adapter。旧 `/sessions` 服务保留为迁移期兼容代码，但不再是 `start_project.sh` 的主入口。当前执行环境没有 PostgreSQL 服务端，因此 Alembic DDL 已完成离线编译，真实 Postgres 事务故障注入仍是 M2 的剩余验收项；Scenario、证据解析、规则计算、LegalAnalysis、文书与前端分别按 M4–M7 继续实施。
+> 2026-07-31 实施记录：生产启动入口已切换到 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权、异步 Controller/Scenario adapter、ToolHub 与权威检索 adapter。Controller 的 `route_scenario` 决策会在同一命令中直接驱动 Scenario 和检索，公共命令、状态与事件协议不包含内部 Agent 调度确认。旧 `/sessions` 服务保留为迁移期兼容代码，但不再是 `start_project.sh` 的主入口。当前执行环境没有 PostgreSQL 服务端及真实 LLM/MCP 测试凭据，因此外部 staging 与真实 Postgres 事务故障注入仍未验收；证据解析、规则计算、LegalAnalysis、文书与前端分别按 M5–M7 继续实施。
 
 ## 1. 决策摘要
 
-本轮迭代要把当前同步、集中式的 `MultiAgentSessionService` 重构为可持续推进、可恢复、可审计的案件运行时。每个案件拥有一条严格串行的命令队列，用户消息、证据上传、事实确认、handoff 确认和文书请求先转成领域命令，再由 `CaseRuntime.run(case_id)` 以异步生成器形式持续产生领域事件。事件先持久化，再投影到 `CaseState`、消息视图和 SSE 输出；ControllerAgent、ScenarioAgent、LegalAnalysisAgent、EvidenceParser、RuleCalculator 及 ToolHub 都只能返回结构化结果或 `CasePatch`，不得绕过 `StateManager` 直接修改案件真相。
+本轮迭代要把当前同步、集中式的 `MultiAgentSessionService` 重构为可持续推进、可恢复、可审计的案件运行时。每个案件拥有一条严格串行的命令队列，用户消息、证据上传、事实确认和文书请求先转成领域命令，再由 `CaseRuntime.run(case_id)` 以异步生成器形式持续产生领域事件。事件先持久化，再投影到 `CaseState`、消息视图和 SSE 输出；ControllerAgent 读取案件状态并作出高层调度决策，ScenarioAgent、LegalAnalysisAgent、EvidenceParser、RuleCalculator 及 ToolHub 作为受调度能力返回结构化结果或 `CasePatch`，不得绕过 `StateManager` 直接修改案件真相。
 
-async generator 在本架构中的职责是统一“执行与增量产出”：同一条命令执行期间，可以依次 `yield` 出已接收、阶段开始、token 增量、工具调用、补丁提交、补丁生效、需要确认、产物生成和执行结束等事件。它不承担持久化真相、权限判断或法律规则；案件真相由版本化 `CaseState` 与 `StateManager` 负责，持久化顺序由 Repository/Unit of Work 负责，Agent 调度由 Controller 和各阶段 Handler 负责。
+async generator 在本架构中的职责是统一“执行与增量产出”：同一条命令执行期间，可以依次 `yield` 出已接收、阶段开始、token 增量、工具调用、补丁提交、补丁生效、事实确认请求、产物生成和执行结束等事件。它不承担持久化真相、权限判断或法律规则；案件真相由版本化 `CaseState` 与 `StateManager` 负责，持久化顺序由 Repository/Unit of Work 负责，Agent 调度由 Controller 负责，各阶段 Handler 只执行 Controller 下达的结构化任务。
 
 首版支持单个 FastAPI 进程内的多案件并发，每个 `case_id` 同时只允许一个消费者推进。这个运行边界必须在部署配置中明确为单 Uvicorn worker；不能在未实现跨进程命令认领前开启多个 worker。多实例不是用静默 fallback 解决，而是在后续显式升级为 Postgres 命令表 + `FOR UPDATE SKIP LOCKED`/advisory lock，或替换为 Redis Streams/NATS。首轮不得提前引入 Kafka。
 
@@ -41,9 +41,9 @@ async generator 在本架构中的职责是统一“执行与增量产出”：�
 
 ## 3. 产品目标与硬约束
 
-系统要完成的不是一个“会聊天的劳动法机器人”，而是一个以案件为中心的持续工作台。用户可以在同一案件中补充事实、上传证据、确认冲突事实、触发检索和规则计算、查看争议焦点、确认 Agent handoff，并生成带事实版本和权威来源引用的法律分析或文书。任何中间结果都必须可追溯到 `case_id`、`command_id`、`event_id`、`causation_id`、`case_version` 和执行主体。
+系统要完成的不是一个“会聊天的劳动法机器人”，而是一个以案件为中心的持续工作台。用户可以在同一案件中补充事实、上传证据、确认冲突事实、触发检索和规则计算、查看争议焦点，并生成带事实版本和权威来源引用的法律分析或文书。Agent 选择和阶段推进属于 Controller 的内部编排，不暴露为需要用户批准的交接动作。任何中间结果都必须可追溯到 `case_id`、`command_id`、`event_id`、`causation_id`、`case_version` 和执行主体。
 
-以下约束属于架构验收条件：Controller 是唯一用户对话路由者，但不得直接实施专业检索和法律结论；Scenario 负责场景事实抽取、证据任务规划和权威资料检索，不得写 confirmed fact；LegalAnalysis 只消费已确认/已标注状态的事实、证据引用、规则结果和权威资料，不得把推断写回事实层；所有状态写入必须通过 `StateManager`；一条案件命令必须在同一案件内串行执行，不同案件可以并行；SSE 断线不得取消已经被接受的案件命令，客户端可从最后事件序号恢复；协议错误必须显式失败，不得合成“看似可用”的 LLM 结果继续推进；不得以固定假响应、空实现、dummy handler 或大量 fallback 宣称功能完成。
+以下约束属于架构验收条件：Controller 是唯一用户对话路由者和高层调度者，但不得亲自实施专业检索和法律结论；Controller 的 typed decision 经 StateManager 校验后直接调度 Scenario、LegalAnalysis 或工具能力，同一条命令内连续推进，不增加内部调度确认命令、待确认交接状态或用户确认门禁；只有事实歧义、事实冲突、材料授权和高影响用户操作才可请求用户确认；Scenario 负责场景事实抽取、证据任务规划和权威资料检索，不得写 confirmed fact；LegalAnalysis 只消费已确认/已标注状态的事实、证据引用、规则结果和权威资料，不得把推断写回事实层；所有状态写入必须通过 `StateManager`；一条案件命令必须在同一案件内串行执行，不同案件可以并行；SSE 断线不得取消已经被接受的案件命令，客户端可从最后事件序号恢复；协议错误必须显式失败，不得合成“看似可用”的 LLM 结果继续推进；不得以固定假响应、空实现、dummy handler 或大量 fallback 宣称功能完成。
 
 ## 4. 目标架构
 
@@ -53,8 +53,9 @@ flowchart TD
     CS --> RT["CaseRuntime Registry"]
     RT --> Q["Per-case asyncio.Queue"]
     Q --> GEN["CaseRuntime.run() async generator"]
-    GEN --> H["Stage Handlers"]
-    H --> AG["Agents + ToolHub"]
+    GEN --> CTRL["Controller Orchestrator"]
+    CTRL --> H["Typed Stage Handlers"]
+    H --> AG["Specialist Agents + ToolHub"]
     AG --> SM["StateManager / ValidationGate"]
     SM --> UOW["Postgres Unit of Work"]
     UOW --> ES["Event Store + Snapshot"]
@@ -62,7 +63,7 @@ flowchart TD
     ES --> READ["Case Query API"]
 ```
 
-API 层只负责鉴权、请求校验、命令创建与流式传输。`CaseCommandService` 把外部操作转换为领域命令并分配 `command_id`。`CaseRuntimeRegistry` 管理活跃案件的 queue、runner task、订阅者和生命周期；`CaseRuntime` 是唯一执行入口。各 Stage Handler 根据当前状态处理命令或派生事件，Agent 与 ToolHub 执行推理和 I/O，`StateManager` 校验 patch，Unit of Work 在单次事务中提交 patch 结果、案件版本、领域事件和必要快照。SSE 与查询 API 读取已经提交的事件和投影，不能把未提交 token 当成案件事实。
+API 层只负责鉴权、请求校验、命令创建与流式传输。`CaseCommandService` 把外部操作转换为领域命令并分配 `command_id`。`CaseRuntimeRegistry` 管理活跃案件的 queue、runner task、订阅者和生命周期；`CaseRuntime` 是唯一执行入口。Controller Orchestrator 每次读取当前快照、产生 typed decision 并调用相应 Stage Handler；各 Handler、专业 Agent 与 ToolHub 只完成被分配的任务并返回结构化结果，不能自行夺取调度权。`StateManager` 校验 patch，Unit of Work 在单次事务中提交 patch 结果、案件版本、领域事件和必要快照。SSE 与查询 API 读取已经提交的事件和投影，不能把未提交 token 当成案件事实。
 
 ## 5. 领域模型
 
@@ -89,8 +90,7 @@ API 层只负责鉴权、请求校验、命令创建与流式传输。`CaseComma
 | `submit_user_message` | 对话输入 | 追加用户消息，触发 Controller/当前阶段推进 |
 | `register_evidence` | 文件上传完成 | 建立 EvidenceItem 并触发解析 |
 | `confirm_fact` | 用户事实确认 | 将指定候选事实升级为 confirmed，或解决冲突 |
-| `confirm_handoff` | 用户确认 | 执行或拒绝已存在的 pending transition |
-| `request_analysis` | 工作台操作 | 在门禁通过后生成/更新争议分析 |
+| `request_analysis` | 工作台操作 | 在事实、证据与引用条件满足后生成/更新争议分析 |
 | `request_document` | 工作台操作 | 生成指定类型文书及 artifact revision |
 | `cancel_operation` | 用户操作 | 取消仍在运行的 operation，不回滚已提交事件 |
 
@@ -120,7 +120,7 @@ class EventEnvelope(BaseModel):
 
 `sequence` 是案件内严格递增序号，也是 SSE 恢复游标。`case_version` 只在状态补丁成功后增加；token、阶段进度等瞬时事件不会随意改变案件版本。`visibility=internal` 的事件用于审计和派生，不能未经投影直接发给前端。
 
-首轮事件字典必须冻结为以下集合：`command.accepted`、`command.rejected`、`operation.started`、`operation.completed`、`operation.failed`、`message.received`、`agent.stage_started`、`agent.token_delta`、`agent.output_received`、`tool.call_started`、`tool.call_completed`、`tool.call_failed`、`patch.submitted`、`patch.applied`、`patch.rejected`、`state.transitioned`、`clarification.requested`、`handoff.requested`、`handoff.confirmed`、`handoff.rejected`、`evidence.registered`、`evidence.parsed`、`fact.confirmation_requested`、`fact.confirmed`、`analysis.updated`、`artifact.generated`。新增事件必须先更新 schema 和兼容性测试。
+首轮事件字典必须冻结为以下集合：`command.accepted`、`command.rejected`、`operation.started`、`operation.completed`、`operation.failed`、`message.received`、`agent.stage_started`、`agent.token_delta`、`agent.output_received`、`tool.call_started`、`tool.call_completed`、`tool.call_failed`、`patch.submitted`、`patch.applied`、`patch.rejected`、`state.transitioned`、`clarification.requested`、`evidence.registered`、`evidence.parsed`、`fact.confirmation_requested`、`fact.confirmed`、`analysis.updated`、`artifact.generated`。内部 Agent 路由以 `state.transitioned` 和 `agent.stage_started` 表达，不建立独立的 Agent 交接事件族。新增事件必须先更新 schema 和兼容性测试。
 
 ## 6. CaseRuntime 与 async generator
 
@@ -157,7 +157,7 @@ SSE 客户端只是事件订阅者。客户端断开时，只取消该订阅，�
 
 ### 7.1 ControllerAgent
 
-Controller 每次处理前读取 `CaseSnapshot`，输出 typed `ControllerDecision`，其决策仅允许为 `ask_clarification`、`route_scenario`、`request_fact_confirmation`、`request_analysis`、`request_document` 或 `continue_current_stage`。现有“三轮追问后合成一个默认 dispute_arbitration 分析包”的逻辑必须删除，因为它会在信息不足时伪造业务路由。达到追问上限时，应输出 `clarification.requested` 并允许用户选择“基于现有信息继续（明确低置信度范围）”或补充信息；若路由所需字段仍缺失，命令以 blocked 状态结束。
+Controller 每次处理前读取 `CaseSnapshot`，输出 typed `ControllerDecision`，其决策仅允许为 `ask_clarification`、`route_scenario`、`request_fact_confirmation`、`request_analysis`、`request_document` 或 `continue_current_stage`。Controller 是整个执行链的高层调度者：`route_scenario` 等决策通过状态迁移校验后立即调用对应 Handler，并在同一条案件命令中继续执行，不等待用户批准内部 Agent 路由；专业 Handler 完成后把结构化结果交回运行时和 StateManager，后续是否继续推进仍由 Controller 语义控制。现有“三轮追问后合成一个默认 dispute_arbitration 分析包”的逻辑必须删除，因为它会在信息不足时伪造业务路由。达到追问上限时，应输出 `clarification.requested` 并允许用户选择“基于现有信息继续（明确低置信度范围）”或补充信息；若路由所需字段仍缺失，命令以 blocked 状态结束。
 
 ### 7.2 ScenarioAgent
 
@@ -201,7 +201,7 @@ CasePatchOperation = (
 )
 ```
 
-阶段迁移表至少包括 `intake → fact_collecting → evidence_processing → analysis_ready → analyzing → document_ready → completed`，并允许从 analysis/document 阶段因新增事实退回 `fact_collecting` 或 `analysis_ready`。handoff 是阶段迁移的门禁条件，而不是另一个与 stage 并列、可能互相矛盾的 `pending_stage` 字符串。
+阶段迁移表至少包括 `intake → fact_collecting → evidence_processing → analysis_ready → analyzing → document_ready → completed`，并允许从 analysis/document 阶段因新增事实退回 `fact_collecting` 或 `analysis_ready`。阶段迁移由 Controller 的 typed decision 发起并由 StateManager 校验；`active_agent` 和 `active_scene_id` 是当前调度投影，不得再建立与 stage 并列的待交接状态、待迁移状态或用户交接门禁。
 
 用户确认事实使用专门 `confirm_fact` 命令，由 `StateManager` producer 权限执行。Agent 只可创建 claimed、pending_verification 或 inferred；inferred 必须含推导依据和 confidence。冲突事实不能通过后来写入覆盖，必须创建 `FactConflict` 并阻塞依赖该事实的分析。
 
@@ -321,11 +321,11 @@ Agents/
 
 ### M3：案件级 CaseRuntime
 
-实现 registry、per-case bounded queue、runner、broadcast 和 async generator，先迁移 `submit_user_message`、`confirm_handoff` 两条主命令。完成标志是同一案件两个并发消息严格按序，不同案件可以并发推进，SSE 断线重连可从 sequence 恢复，当前线程池轮询链路被移除。
+实现 registry、per-case bounded queue、runner、broadcast 和 async generator，先迁移 `submit_user_message` 主命令，并验证 Controller 决策可以在同一命令内继续驱动专业阶段。完成标志是同一案件两个并发消息严格按序，不同案件可以并发推进，SSE 断线重连可从 sequence 恢复，当前线程池轮询链路被移除。
 
 ### M4：Controller 与 Scenario 完整迁移
 
-实现 typed ControllerDecision、ScenarioResult、模板完整性启动校验、异步 LLM adapter、ToolHub 和权威检索结果模型；删除三轮追问后的合成分析 fallback。完成标志是 intake → clarification 或 handoff → scenario → authority retrieval 的业务路径能以真实事件推进，MCP 失败不会产生无依据结论。
+实现 typed ControllerDecision、ScenarioResult、模板完整性启动校验、异步 LLM adapter、ToolHub 和权威检索结果模型；删除三轮追问后的合成分析 fallback。完成标志是 intake → clarification，或 Controller 直接调度 scenario → authority retrieval 的业务路径能在同一命令中以真实事件推进，MCP 失败不会产生无依据结论。
 
 ### M5：证据、规则与事实确认闭环
 
@@ -365,4 +365,4 @@ Agents/
 
 ## 17. 首个开发切片
 
-实施应从 M0 + M1 开始，但第一个可演示纵切片必须尽快贯通：`submit_user_message` 命令进入 per-case queue，`CaseRuntime.run()` 产生 committed events，Controller 返回追问或 handoff decision，StateManager 原子更新 interaction/facts，SSE 以 sequence 推给客户端，进程重启后可从 Postgres snapshot 恢复并从上一 sequence 续传。这个切片完成后再迁移 Scenario 和 Legal，避免一次性重写 1938 行 service 后无法验证，同时也避免以空 handler、假 Agent 或仅有接口骨架冒充异步架构完成。
+实施应从 M0 + M1 开始，但第一个可演示纵切片必须尽快贯通：`submit_user_message` 命令进入 per-case queue，`CaseRuntime.run()` 产生 committed events，Controller 返回追问或直接路由决策，StateManager 原子更新 interaction/facts；路由决策在同一命令中继续驱动 Scenario，而不暂停等待内部交接确认；SSE 以 sequence 推给客户端，进程重启后可从 Postgres snapshot 恢复并从上一 sequence 续传。这个切片完成后再迁移 Legal，避免一次性重写 1938 行 service 后无法验证，同时也避免以空 handler、假 Agent 或仅有接口骨架冒充异步架构完成。

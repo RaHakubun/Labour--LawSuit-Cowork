@@ -6,6 +6,8 @@ from httpx import ASGITransport, AsyncClient
 from Agents.api.async_app import create_async_case_app
 from Agents.api.auth import BearerTokenAuthenticator
 from Agents.application.decisions import AskClarificationDecision
+from Agents.application.scenario_models import ScenarioResult
+from Agents.services.tool_hub import AuthorityToolResult, ToolHub
 
 
 class TerminationController:
@@ -20,10 +22,32 @@ class TerminationController:
         )
 
 
+class ApiScenarioProvider:
+    async def analyze(self, *, role_id, scene_id, case_state):
+        return ScenarioResult(
+            scene_id=scene_id,
+            confidence=0.5,
+            missing_fact_questions=["请补充劳动合同。"],
+            summary="需要继续核对劳动合同。",
+        )
+
+
+class ApiAuthorityAdapter:
+    async def search(self, request):
+        return AuthorityToolResult(
+            tool_name=request.tool_name,
+            normalized_query=" ".join(request.query.split()),
+            attempts=1,
+            documents=(),
+        )
+
+
 class AsyncCaseApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.app = create_async_case_app(
             decision_provider=TerminationController(),
+            scenario_provider=ApiScenarioProvider(),
+            tool_hub=ToolHub(ApiAuthorityAdapter()),
             authenticator=BearerTokenAuthenticator(
                 {
                     "worker-one-token": "worker-1",
@@ -105,6 +129,31 @@ class AsyncCaseApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+    async def test_internal_agent_routing_is_not_a_user_command(self):
+        create = await self.client.post(
+            "/api/v1/cases",
+            headers=self.headers,
+            json={"role_id": "worker"},
+        )
+        case_id = create.json()["case_id"]
+
+        response = await self.client.post(
+            f"/api/v1/cases/{case_id}/commands",
+            headers=self.headers,
+            json={
+                "idempotency_key": "invalid-internal-routing-command",
+                "expected_case_version": 0,
+                "payload": {
+                    "command_type": "confirm_handoff",
+                    "handoff_id": "2f5e17c4-16c4-488c-a337-fb043cfe6e18",
+                    "approve": True,
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_command")
 
 
 if __name__ == "__main__":

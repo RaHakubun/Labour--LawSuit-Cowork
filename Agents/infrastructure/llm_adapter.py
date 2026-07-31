@@ -8,12 +8,36 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from Agents.application.decisions import ControllerDecision
+from Agents.application.scenario_models import ScenarioResult
 from Agents.domain.case_state import CaseState
+from Agents.scene_catalog import (
+    get_role_scene_template_path,
+    validate_role_id,
+    validate_scene_id,
+    validate_template_catalog,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTROLLER_TEMPLATE = PROJECT_ROOT / "Prompt_Template" / "ControllerAgent.md"
 _DECISION_ADAPTER: TypeAdapter[ControllerDecision] = TypeAdapter(ControllerDecision)
+_SCENARIO_RESULT_ADAPTER: TypeAdapter[ScenarioResult] = TypeAdapter(ScenarioResult)
+
+
+def _parse_json_object(text: str, *, actor_name: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError(f"{actor_name} returned an empty response")
+    if cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```json").removeprefix("```")
+        cleaned = cleaned.removesuffix("```").strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{actor_name} response is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{actor_name} response must be a JSON object")
+    return payload
 
 
 class AsyncOpenAIControllerDecisionProvider:
@@ -79,23 +103,97 @@ class AsyncOpenAIControllerDecisionProvider:
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.choices[0].message.content or ""
-        payload = self._parse_json_object(text)
+        payload = _parse_json_object(text, actor_name="ControllerAgent")
         try:
             return _DECISION_ADAPTER.validate_python(payload)
         except ValidationError as exc:
             raise ValueError(f"ControllerAgent protocol violation: {exc}") from exc
 
-    def _parse_json_object(self, text: str) -> dict[str, Any]:
-        cleaned = text.strip()
-        if not cleaned:
-            raise ValueError("ControllerAgent returned an empty response")
-        if cleaned.startswith("```"):
-            cleaned = cleaned.removeprefix("```json").removeprefix("```")
-            cleaned = cleaned.removesuffix("```").strip()
+class AsyncOpenAIScenarioResultProvider:
+    """Scenario adapter that returns only the M4 typed contract."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout_seconds: float = 90.0,
+    ) -> None:
+        self._base_url = (base_url or os.getenv("LLM_BASE_URL") or "").strip()
+        self._api_key = (api_key or os.getenv("LLM_API_KEY") or "").strip()
+        self._model = (model or os.getenv("LLM_MODEL") or "").strip()
+        self._timeout_seconds = timeout_seconds
+        if not self._base_url:
+            raise RuntimeError("LLM_BASE_URL is required")
+        if not self._api_key:
+            raise RuntimeError("LLM_API_KEY is required")
+        if not self._model:
+            raise RuntimeError("LLM_MODEL is required")
+        validate_template_catalog(PROJECT_ROOT)
+
+    async def analyze(
+        self,
+        *,
+        role_id: str,
+        scene_id: str,
+        case_state: CaseState,
+    ) -> ScenarioResult:
         try:
-            payload = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ValueError("ControllerAgent response is not valid JSON") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("ControllerAgent response must be a JSON object")
-        return payload
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise ImportError("Install the openai dependency to run ScenarioAgent") from exc
+
+        role = validate_role_id(role_id)
+        scene = validate_scene_id(scene_id)
+        template_path = PROJECT_ROOT / get_role_scene_template_path(role, scene)
+        template = template_path.read_text(encoding="utf-8")
+        contract = (
+            "\n\n忽略模板中旧版输出示例，必须只输出以下结构的 JSON 对象，禁止 Markdown："
+            '{"scene_id":"'
+            + scene
+            + '","confidence":0.0,'
+            '"candidate_facts":[{"fact_id":"...","value":"...",'
+            '"confidence":0.0,"derivation":"依据用户原文的说明"}],'
+            '"missing_fact_questions":["最多三个具体问题"],'
+            '"evidence_requirements":[{"evidence_type":"...","purpose":"...",'
+            '"required":true}],'
+            '"retrieval_plan":[{"tool_name":"检索法律法规-语义",'
+            '"query":"针对本案事实的完整查询","purpose":"...","required":true}],'
+            '"rule_calculation_requests":[{"rule_name":"...",'
+            '"required_fact_ids":["..."]}],"summary":"场景处理摘要"}。'
+            "不得在检索完成前生成法律结论或法条内容；没有来源时不得伪造引用。"
+        )
+        prompt = (
+            template.replace(
+                "{user_input}",
+                case_state.interaction.last_user_input,
+            )
+            .replace(
+                "{conversation_context}",
+                json.dumps(case_state.model_dump(mode="json"), ensure_ascii=False),
+            )
+            .replace("{attachments_meta}", "[]")
+            + f"\n\nuser_role={role}\n"
+            + contract
+        )
+        client = AsyncOpenAI(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            timeout=self._timeout_seconds,
+        )
+        response = await client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.choices[0].message.content or ""
+        payload = _parse_json_object(text, actor_name="ScenarioAgent")
+        try:
+            result = _SCENARIO_RESULT_ADAPTER.validate_python(payload)
+        except ValidationError as exc:
+            raise ValueError(f"ScenarioAgent protocol violation: {exc}") from exc
+        if result.scene_id != scene:
+            raise ValueError(
+                f"ScenarioAgent returned scene_id={result.scene_id}, expected {scene}"
+            )
+        return result

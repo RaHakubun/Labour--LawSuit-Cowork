@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from Agents.scene_catalog import (
     ROLE_IDS,
@@ -11,6 +12,7 @@ from Agents.scene_catalog import (
     validate_module_key,
     validate_role_id,
     validate_scene_id,
+    validate_template_catalog,
 )
 
 
@@ -30,14 +32,15 @@ class SceneCatalogTests(unittest.TestCase):
 
     def test_template_filename(self):
         self.assertEqual(get_scene_template_filename("work_injury"), "work_injury.md")
-        self.assertIn(
-            "新洪-用人单位侧-ScenarioAgents",
-            get_role_scene_template_path("employer", "rules_policy_effectiveness"),
+        self.assertEqual(
+            get_role_scene_template_path("employer", "termination_layoff"),
+            "Prompt_Template/ScenarioAgents/termination_layoff.md",
         )
-        self.assertIn(
-            "檬檬-律师侧 scenario agents",
-            get_role_scene_template_path("lawyer", "law_case_research"),
-        )
+        with self.assertRaises(ValueError):
+            get_role_scene_template_path("lawyer", "law_case_research")
+
+    def test_all_routable_scenes_have_checked_in_templates(self):
+        validate_template_catalog(Path(__file__).resolve().parents[1])
 
     def test_role_module_mapping(self):
         worker_modules = list_role_modules("worker")
@@ -47,6 +50,19 @@ class SceneCatalogTests(unittest.TestCase):
     def test_module_scene_hints(self):
         hints = list_module_scene_hints("lawyer_compensation")
         self.assertIn("termination_layoff", hints)
+        for module_key in (
+            "compensation_calculator",
+            "evidence_checker",
+            "strategy_advisor",
+            "compliance_scanner",
+            "contract_templates",
+            "communication_guide",
+            "law_search",
+            "evidence_organizer",
+            "lawyer_compensation",
+        ):
+            for scene_id in list_module_scene_hints(module_key):
+                self.assertIn(scene_id, SCENE_IDS)
 
     def test_catalog_summary(self):
         summary = summarize_catalog()

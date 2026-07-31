@@ -7,29 +7,34 @@ from Agents.application.decisions import (
     ControllerDecisionProvider,
     RouteScenarioDecision,
 )
+from Agents.application.handlers.scenario import ScenarioStageHandler
 from Agents.domain.case_state import (
     CaseAggregate,
     CaseStage,
-    PendingHandoff,
     PendingQuestion,
 )
 from Agents.domain.commands import (
     CaseCommand,
-    ConfirmHandoffPayload,
     SubmitUserMessagePayload,
 )
 from Agents.domain.events import EventDraft
 from Agents.domain.patches import CasePatch, SetInteraction
+from Agents.scene_catalog import validate_scene_id
 
 from .base import ExecutionBatch
 
 
-class IntakeCommandHandler:
-    def __init__(self, decision_provider: ControllerDecisionProvider) -> None:
+class ControllerCommandHandler:
+    def __init__(
+        self,
+        decision_provider: ControllerDecisionProvider,
+        scenario_handler: ScenarioStageHandler,
+    ) -> None:
         self._decision_provider = decision_provider
+        self._scenario_handler = scenario_handler
 
     def supports(self, command_type: str) -> bool:
-        return command_type in {"submit_user_message", "confirm_handoff"}
+        return command_type == "submit_user_message"
 
     async def execute(
         self,
@@ -39,9 +44,6 @@ class IntakeCommandHandler:
         if isinstance(command.payload, SubmitUserMessagePayload):
             async for batch in self._submit_message(command, aggregate):
                 yield batch
-            return
-        if isinstance(command.payload, ConfirmHandoffPayload):
-            yield self._confirm_handoff(command, aggregate)
             return
         raise ValueError(f"unsupported intake command: {command.command_type}")
 
@@ -121,19 +123,16 @@ class IntakeCommandHandler:
             return
 
         if isinstance(decision, RouteScenarioDecision):
-            handoff = PendingHandoff(
-                from_agent="ControllerAgent",
-                to_agent="ScenarioAgent",
-                reason=decision.reason,
-                target_stage=CaseStage.EVIDENCE_PROCESSING,
-            )
+            scene_id = validate_scene_id(decision.scene_id)
             patch = CasePatch(
                 producer="ControllerAgent",
                 base_version=aggregate.version,
                 operations=[
                     SetInteraction(
+                        stage=CaseStage.EVIDENCE_PROCESSING,
+                        active_agent="ScenarioAgent",
+                        active_scene_id=scene_id,
                         current_goal=decision.current_goal,
-                        pending_handoff=handoff,
                         pending_questions=[],
                         blocked_on=[],
                     )
@@ -143,58 +142,30 @@ class IntakeCommandHandler:
                 patch=patch,
                 events=[
                     EventDraft(
-                        event_type="handoff.requested",
+                        event_type="state.transitioned",
                         producer="ControllerAgent",
-                        visibility="user",
+                        visibility="internal",
                         payload={
-                            **handoff.model_dump(mode="json"),
-                            "scene_id": decision.scene_id,
+                            "from_stage": aggregate.state.interaction.stage.value,
+                            "to_stage": CaseStage.EVIDENCE_PROCESSING.value,
+                            "reason": decision.reason,
+                            "scene_id": scene_id,
                         },
-                    )
+                    ),
+                    EventDraft(
+                        event_type="agent.stage_started",
+                        producer="ScenarioAgent",
+                        visibility="user",
+                        payload={"stage": "scenario", "scene_id": scene_id},
+                    ),
                 ],
             )
+            async for batch in self._scenario_handler.execute_stage(
+                command,
+                aggregate,
+                scene_id=scene_id,
+            ):
+                yield batch
             return
 
         raise ValueError(f"unsupported controller decision: {decision}")
-
-    def _confirm_handoff(
-        self,
-        command: CaseCommand,
-        aggregate: CaseAggregate,
-    ) -> ExecutionBatch:
-        payload = command.payload
-        if not isinstance(payload, ConfirmHandoffPayload):
-            raise TypeError("confirm handoff handler received an invalid payload")
-        pending = aggregate.state.interaction.pending_handoff
-        if pending is None:
-            raise ValueError("no pending handoff")
-        if pending.handoff_id != payload.handoff_id:
-            raise ValueError("handoff_id does not match pending handoff")
-        if payload.approve:
-            operation = SetInteraction(
-                stage=pending.target_stage,
-                active_agent=pending.to_agent,
-                clear_pending_handoff=True,
-            )
-            event = EventDraft(
-                event_type="handoff.confirmed",
-                producer="StateManager",
-                visibility="user",
-                payload=pending.model_dump(mode="json"),
-            )
-        else:
-            operation = SetInteraction(clear_pending_handoff=True)
-            event = EventDraft(
-                event_type="handoff.rejected",
-                producer="StateManager",
-                visibility="user",
-                payload=pending.model_dump(mode="json"),
-            )
-        return ExecutionBatch(
-            patch=CasePatch(
-                producer="StateManager",
-                base_version=aggregate.version,
-                operations=[operation],
-            ),
-            events=[event],
-        )

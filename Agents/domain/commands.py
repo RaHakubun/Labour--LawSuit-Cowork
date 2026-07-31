@@ -21,12 +21,6 @@ class ConfirmFactPayload(StrictModel):
     conflict_id: UUID | None = None
 
 
-class ConfirmHandoffPayload(StrictModel):
-    command_type: Literal["confirm_handoff"] = "confirm_handoff"
-    handoff_id: UUID
-    approve: bool
-
-
 class RegisterEvidencePayload(StrictModel):
     command_type: Literal["register_evidence"] = "register_evidence"
     evidence_id: UUID
@@ -49,7 +43,6 @@ class CancelOperationPayload(StrictModel):
 CommandPayload = Annotated[
     SubmitUserMessagePayload
     | ConfirmFactPayload
-    | ConfirmHandoffPayload
     | RegisterEvidencePayload
     | RequestAnalysisPayload
     | RequestDocumentPayload

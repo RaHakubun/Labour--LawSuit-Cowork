@@ -14,7 +14,7 @@ python -m pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-编辑 `.env`，至少设置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`DATABASE_URL` 和 `APP_API_TOKENS_JSON`。`APP_API_TOKENS_JSON` 是 Bearer token 到 actor ID 的映射，例如 `{"a-long-random-token":"local-user"}`。加载环境变量后启动：
+编辑 `.env`，至少设置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`PKULAW_MCP_TOKEN`、`DATABASE_URL` 和 `APP_API_TOKENS_JSON`。`APP_API_TOKENS_JSON` 是 Bearer token 到 actor ID 的映射，例如 `{"a-long-random-token":"local-user"}`。加载环境变量后启动：
 
 ```bash
 set -a

@@ -14,11 +14,14 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from Agents.application.command_service import CaseCommandService
 from Agents.application.decisions import ControllerDecisionProvider
-from Agents.application.handlers.intake import IntakeCommandHandler
+from Agents.application.handlers.intake import ControllerCommandHandler
+from Agents.application.handlers.scenario import ScenarioStageHandler
+from Agents.application.scenario_models import ScenarioResultProvider
 from Agents.domain.commands import CommandPayload
 from Agents.infrastructure.memory_uow import InMemoryCaseUnitOfWork
 from Agents.infrastructure.uow import CaseUnitOfWork
 from Agents.runtime.registry import CaseRuntimeRegistry
+from Agents.services.tool_hub import ToolHub
 
 from .auth import BearerTokenAuthenticator
 
@@ -38,15 +41,23 @@ class SubmitCommandRequest(BaseModel):
 def create_async_case_app(
     *,
     decision_provider: ControllerDecisionProvider,
+    scenario_provider: ScenarioResultProvider,
+    tool_hub: ToolHub,
     authenticator: BearerTokenAuthenticator,
     unit_of_work: CaseUnitOfWork | None = None,
     allowed_origins: list[str] | None = None,
     shutdown_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
 ) -> FastAPI:
     uow = unit_of_work or InMemoryCaseUnitOfWork()
+    scenario_handler = ScenarioStageHandler(
+        scenario_provider=scenario_provider,
+        tool_hub=tool_hub,
+    )
     registry = CaseRuntimeRegistry(
         unit_of_work=uow,
-        handlers=[IntakeCommandHandler(decision_provider)],
+        handlers=[
+            ControllerCommandHandler(decision_provider, scenario_handler),
+        ],
     )
     command_service = CaseCommandService(
         unit_of_work=uow,
@@ -236,13 +247,28 @@ def _case_summary(aggregate) -> dict[str, Any]:
         "version": aggregate.version,
         "stage": interaction.stage.value,
         "active_agent": interaction.active_agent,
+        "active_scene_id": interaction.active_scene_id or None,
+        "current_goal": interaction.current_goal,
         "pending_questions": [
             item.model_dump(mode="json") for item in interaction.pending_questions
         ],
-        "pending_handoff": (
-            interaction.pending_handoff.model_dump(mode="json")
-            if interaction.pending_handoff
-            else None
-        ),
+        "candidate_facts": [
+            item.model_dump(mode="json")
+            for item in aggregate.state.facts.items.values()
+        ],
+        "authorities": [
+            {
+                "authority_id": str(item.authority_id),
+                "tool_name": item.tool_name,
+                "query": item.query,
+                "source_id": item.source_id,
+                "title": item.title,
+                "source_url": item.source_url,
+                "content_hash": item.content_hash,
+                "parsed_status": item.parsed_status,
+                "retrieved_at": item.retrieved_at.isoformat(),
+            }
+            for item in aggregate.state.analysis.authorities.values()
+        ],
         "updated_at": aggregate.updated_at.isoformat(),
     }

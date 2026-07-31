@@ -1,5 +1,5 @@
 import os
-from typing import Any, Callable, Generator, Optional
+from typing import Any, Callable, Optional
 
 
 def get_client(base_url: str | None = None, api_key: str | None = None):

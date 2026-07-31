@@ -12,7 +12,6 @@ from .case_state import (
     FactItem,
     IssueCard,
     OutputArtifact,
-    PendingHandoff,
     PendingQuestion,
     RuleResult,
     StrictModel,
@@ -24,10 +23,9 @@ class SetInteraction(StrictModel):
     stage: CaseStage | None = None
     active_agent: str | None = None
     current_goal: str | None = None
+    active_scene_id: str | None = None
     last_user_input: str | None = None
     pending_questions: list[PendingQuestion] | None = None
-    pending_handoff: PendingHandoff | None = None
-    clear_pending_handoff: bool = False
     blocked_on: list[str] | None = None
 
 

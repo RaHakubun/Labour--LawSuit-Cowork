@@ -44,29 +44,15 @@ class PendingQuestion(StrictModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class PendingHandoff(StrictModel):
-    handoff_id: UUID = Field(default_factory=uuid4)
-    from_agent: str = Field(min_length=1)
-    to_agent: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    target_stage: CaseStage
-
-    @model_validator(mode="after")
-    def different_agents(self) -> "PendingHandoff":
-        if self.from_agent == self.to_agent:
-            raise ValueError("handoff requires different agents")
-        return self
-
-
 class InteractionState(StrictModel):
     schema_version: Literal["1.0"] = SCHEMA_VERSION
     stage: CaseStage = CaseStage.INTAKE
     active_agent: str = "ControllerAgent"
     user_role: str = ""
     current_goal: str = ""
+    active_scene_id: str = ""
     last_user_input: str = ""
     pending_questions: list[PendingQuestion] = Field(default_factory=list)
-    pending_handoff: PendingHandoff | None = None
     blocked_on: list[str] = Field(default_factory=list)
 
 
@@ -143,6 +129,10 @@ class AuthorityRef(StrictModel):
     query: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    title: str = ""
+    source_url: str = ""
+    excerpt: str = ""
+    parsed_status: Literal["parsed"] = "parsed"
     retrieved_at: datetime = Field(default_factory=utc_now)
 
 

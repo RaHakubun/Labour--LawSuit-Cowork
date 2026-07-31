@@ -6,11 +6,24 @@ from Agents.application.decisions import (
     AskClarificationDecision,
     RouteScenarioDecision,
 )
-from Agents.application.handlers.intake import IntakeCommandHandler
+from Agents.application.handlers.intake import ControllerCommandHandler
+from Agents.application.handlers.scenario import ScenarioStageHandler
+from Agents.application.scenario_models import (
+    AuthorityRetrievalRequest,
+    CandidateFact,
+    EvidenceRequirement,
+    ScenarioResult,
+)
 from Agents.domain.case_state import CaseStage
-from Agents.domain.commands import ConfirmHandoffPayload, SubmitUserMessagePayload
+from Agents.domain.commands import SubmitUserMessagePayload
 from Agents.infrastructure.memory_uow import InMemoryCaseUnitOfWork
 from Agents.runtime.registry import CaseRuntimeRegistry
+from Agents.services.tool_hub import (
+    AuthorityDocument,
+    AuthorityToolResult,
+    ToolExecutionError,
+    ToolHub,
+)
 
 
 class TerminationDecisionProvider:
@@ -47,11 +60,82 @@ class BlockingDecisionProvider:
         )
 
 
+class TerminationScenarioProvider:
+    async def analyze(self, *, role_id, scene_id, case_state):
+        return ScenarioResult(
+            scene_id=scene_id,
+            confidence=0.84,
+            candidate_facts=[
+                CandidateFact(
+                    fact_id="termination.written_notice",
+                    value=False,
+                    confidence=0.95,
+                    derivation="用户明确表示未收到书面解除通知。",
+                )
+            ],
+            missing_fact_questions=["请上传劳动合同及能够证明解除决定的沟通记录。"],
+            evidence_requirements=[
+                EvidenceRequirement(
+                    evidence_type="劳动合同",
+                    purpose="核对工作年限、工资约定及解除条款",
+                )
+            ],
+            retrieval_plan=[
+                AuthorityRetrievalRequest(
+                    tool_name="检索法律法规-语义",
+                    query="用人单位以绩效不合格为由口头解除劳动合同的法定条件和程序",
+                    purpose="核对解除依据与书面通知程序",
+                )
+            ],
+            summary="已进入解除裁员场景，需核对解除依据、程序和证据。",
+        )
+
+
+class ReviewedAuthorityAdapter:
+    async def search(self, request):
+        return AuthorityToolResult(
+            tool_name=request.tool_name,
+            normalized_query=" ".join(request.query.split()),
+            attempts=1,
+            documents=(
+                AuthorityDocument(
+                    source_id="labour-contract-law-article-40",
+                    title="中华人民共和国劳动合同法第四十条",
+                    source_url="https://flk.npc.gov.cn/",
+                    excerpt="本协议样本用于验证权威资料引用结构，不作为线上动态法源。",
+                    content_hash=(
+                        "9d52a5ac0443cf77158572b1fdb7675a"
+                        "fdcdba53c6b677586e8b84387548657d"
+                    ),
+                ),
+            ),
+        )
+
+
+class UnavailableAuthorityAdapter:
+    async def search(self, request):
+        raise ToolExecutionError(
+            "authority provider rejected the request",
+            retryable=False,
+        )
+
+
 class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _controller_handler(
+        decision_provider,
+        authority_adapter=None,
+    ):
+        scenario_handler = ScenarioStageHandler(
+            scenario_provider=TerminationScenarioProvider(),
+            tool_hub=ToolHub(authority_adapter or ReviewedAuthorityAdapter()),
+        )
+        return ControllerCommandHandler(decision_provider, scenario_handler)
+
     async def asyncSetUp(self):
         self.uow = InMemoryCaseUnitOfWork()
-        handler = IntakeCommandHandler(TerminationDecisionProvider())
-        self.registry = CaseRuntimeRegistry(unit_of_work=self.uow, handlers=[handler])
+        handlers = [self._controller_handler(TerminationDecisionProvider())]
+        self.registry = CaseRuntimeRegistry(unit_of_work=self.uow, handlers=handlers)
         self.service = CaseCommandService(
             unit_of_work=self.uow,
             runtime_registry=self.registry,
@@ -115,7 +199,7 @@ class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(completed), 1)
 
-    async def test_confirmed_handoff_advances_case_to_scenario_stage(self):
+    async def test_controller_routes_and_executes_scenario_without_user_gate(self):
         case = await self.service.create_case(owner_id="worker-1", role_id="worker")
         await self.service.submit(
             case_id=case.case_id,
@@ -131,29 +215,24 @@ class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         runtime = await self.registry.get_or_create(case.case_id)
         await runtime.wait_idle()
-        routed = await self.uow.get_case(case.case_id)
-        pending = routed.state.interaction.pending_handoff
-        self.assertIsNotNone(pending)
-
-        await self.service.submit(
-            case_id=case.case_id,
-            actor_id="worker-1",
-            idempotency_key="approve-scenario-handoff",
-            expected_case_version=routed.version,
-            payload=ConfirmHandoffPayload(
-                handoff_id=pending.handoff_id,
-                approve=True,
-            ),
-        )
-        await runtime.wait_idle()
 
         updated = await self.uow.get_case(case.case_id)
         self.assertEqual(updated.state.interaction.stage, CaseStage.EVIDENCE_PROCESSING)
-        self.assertEqual(updated.state.interaction.active_agent, "ScenarioAgent")
-        self.assertIsNone(updated.state.interaction.pending_handoff)
+        self.assertEqual(updated.state.interaction.active_agent, "ControllerAgent")
+        self.assertEqual(
+            updated.state.interaction.active_scene_id,
+            "termination_layoff",
+        )
+        self.assertIn("termination.written_notice", updated.state.facts.items)
+        self.assertEqual(len(updated.state.analysis.authorities), 1)
+        event_types = [
+            event.event_type for event in await self.uow.list_events(case.case_id)
+        ]
+        self.assertIn("state.transitioned", event_types)
+        self.assertIn("clarification.requested", event_types)
         self.assertIn(
-            "handoff.confirmed",
-            [event.event_type for event in await self.uow.list_events(case.case_id)],
+            "tool.call_completed",
+            event_types,
         )
 
     async def test_different_cases_progress_concurrently(self):
@@ -161,7 +240,9 @@ class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         provider = BlockingDecisionProvider()
         self.registry = CaseRuntimeRegistry(
             unit_of_work=self.uow,
-            handlers=[IntakeCommandHandler(provider)],
+            handlers=[
+                self._controller_handler(provider),
+            ],
         )
         self.service = CaseCommandService(
             unit_of_work=self.uow,
@@ -194,6 +275,44 @@ class CaseRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.started, 2)
         self.assertEqual((await self.uow.get_case(first_case.case_id)).version, 2)
         self.assertEqual((await self.uow.get_case(second_case.case_id)).version, 2)
+
+    async def test_required_authority_failure_stops_without_unfounded_sources(self):
+        await self.registry.shutdown(timeout=2)
+        self.registry = CaseRuntimeRegistry(
+            unit_of_work=self.uow,
+            handlers=[
+                self._controller_handler(
+                    TerminationDecisionProvider(),
+                    UnavailableAuthorityAdapter(),
+                ),
+            ],
+        )
+        self.service = CaseCommandService(
+            unit_of_work=self.uow,
+            runtime_registry=self.registry,
+        )
+        case = await self.service.create_case(owner_id="worker-3", role_id="worker")
+        await self.service.submit(
+            case_id=case.case_id,
+            actor_id="worker-3",
+            idempotency_key="route-termination-case",
+            expected_case_version=0,
+            payload=SubmitUserMessagePayload(
+                text=(
+                    "公司在2026年7月20日以绩效不合格为由口头辞退我，"
+                    "解除时间已经明确，工资是每月10000元，没有书面解除通知。"
+                )
+            ),
+        )
+        runtime = await self.registry.get_or_create(case.case_id)
+        await runtime.wait_idle()
+
+        updated = await self.uow.get_case(case.case_id)
+        events = await self.uow.list_events(case.case_id)
+        self.assertEqual(updated.state.analysis.authorities, {})
+        self.assertIn("termination.written_notice", updated.state.facts.items)
+        self.assertEqual(events[-2].event_type, "tool.call_failed")
+        self.assertEqual(events[-1].event_type, "operation.failed")
 
 
 if __name__ == "__main__":
