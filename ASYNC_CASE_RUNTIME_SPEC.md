@@ -1,10 +1,12 @@
 # Labour Lawsuit 案件级异步事件流架构迭代 Spec
 
-> 状态：待实施
+> 状态：实施中（M0、M1、M2 核心事务层及 M3 首个纵向切片已落地；M4–M7 待继续）
 > 目标分支：`lbw`
 > 基线提交：`311e9a8c7e3f3f722ca5c280c9b38a8635a3cd2e`
 > 适用范围：当前仓库后端，以及后续恢复到仓库中的案件工作台前端
 > 架构决策：采用“案件级异步事件流 + async generator 运行时”，而不是把 async generator 误当成全部业务架构
+
+> 2026-07-31 实施记录：生产启动入口已切换到 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权和异步 Controller adapter。旧 `/sessions` 服务保留为迁移期兼容代码，但不再是 `start_project.sh` 的主入口。当前执行环境没有 PostgreSQL 服务端，因此 Alembic DDL 已完成离线编译，真实 Postgres 事务故障注入仍是 M2 的剩余验收项；Scenario、证据解析、规则计算、LegalAnalysis、文书与前端分别按 M4–M7 继续实施。
 
 ## 1. 决策摘要
 

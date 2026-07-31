@@ -619,7 +619,7 @@ class SessionServiceTests(unittest.TestCase):
             )
             self.assertIn("补充信息", controller_llm.calls[1]["user_prompt"])
 
-    def test_forced_route_after_three_asks_renders_handoff_consistently(self):
+    def test_controller_does_not_force_route_when_information_is_still_missing(self):
         controller_llm = FakeLLM(
             [
                 (
@@ -671,11 +671,11 @@ class SessionServiceTests(unittest.TestCase):
             state.controller_ask_count = 3
             turn = service.submit_turn(session.session_id, "我补充完了")
 
-        self.assertEqual(turn.askmore, "no")
-        self.assertTrue(turn.requires_handoff_confirmation)
-        self.assertEqual(turn.pending_transition["to_agent"], "ScenarioAgent")
+        self.assertEqual(turn.askmore, "yes")
+        self.assertFalse(turn.requires_handoff_confirmation)
+        self.assertIsNone(turn.pending_transition)
         agent_messages = [m for m in turn.messages if m.speaker_type == "agent"]
-        self.assertEqual(agent_messages[0].display_blocks[0].title, "ControllerAgent 路由结果")
+        self.assertEqual(agent_messages[0].display_blocks[0].title, "ControllerAgent 追问")
 
 
 if __name__ == "__main__":

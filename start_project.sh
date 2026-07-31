@@ -9,8 +9,7 @@ BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
-# ── RAG 知识库子应用配置 ──────────────────────────────────────────────────────
-export SILICONFLOW_API_KEY="${SILICONFLOW_API_KEY:-sk-wdotugwguprsmeimsowcbehipjlkyaabkgbxnudkkhvjhumm}"
+# ── 可选 RAG 知识库子应用配置 ─────────────────────────────────────────────────
 export SILICONFLOW_MODEL="${SILICONFLOW_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"
 export KNOWLEDGE_ROOT="${KNOWLEDGE_ROOT:-${HOME}/Documents/rag-skill/knowledge}"
 export APP_DATABASE_PATH="${APP_DATABASE_PATH:-${ROOT_DIR}/storage/rag.db}"
@@ -36,8 +35,19 @@ cleanup() {
   fi
 }
 
-ensure_command npm
 ensure_command lsof
+
+for required_var in LLM_BASE_URL LLM_API_KEY LLM_MODEL DATABASE_URL APP_API_TOKENS_JSON; do
+  if [[ -z "${!required_var:-}" ]]; then
+    echo "[ERROR] ${required_var} is required."
+    exit 1
+  fi
+done
+
+if [[ "${ENABLE_RAG:-}" =~ ^(1|true|yes)$ ]] && [[ -z "${SILICONFLOW_API_KEY:-}" ]]; then
+  echo "[ERROR] SILICONFLOW_API_KEY is required when ENABLE_RAG is enabled."
+  exit 1
+fi
 
 resolve_python_bin() {
   # Prefer the active env interpreter (usually `python` in conda/venv).
@@ -62,14 +72,22 @@ if ! "${PYTHON_BIN}" -c "import uvicorn" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -d "${FRONTEND_DIR}" ]]; then
-  echo "[ERROR] Frontend directory not found: ${FRONTEND_DIR}"
+if ! "${PYTHON_BIN}" -c "import alembic, asyncpg, sqlalchemy" >/dev/null 2>&1; then
+  echo "[ERROR] Database dependencies are missing. Install the project first:"
+  echo "[ERROR]   ${PYTHON_BIN} -m pip install -e ."
   exit 1
 fi
 
-if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
-  echo "[INFO] Installing frontend dependencies..."
-  (cd "${FRONTEND_DIR}" && npm i --cache .npm-cache)
+START_FRONTEND=0
+if [[ -d "${FRONTEND_DIR}" ]]; then
+  ensure_command npm
+  START_FRONTEND=1
+  if [[ ! -d "${FRONTEND_DIR}/node_modules" ]]; then
+    echo "[INFO] Installing frontend dependencies..."
+    (cd "${FRONTEND_DIR}" && npm i --cache .npm-cache)
+  fi
+else
+  echo "[INFO] Frontend source is not present; starting the backend only."
 fi
 
 clear_frontend_quarantine() {
@@ -111,12 +129,16 @@ assert_process_started() {
 }
 
 assert_port_available "${BACKEND_PORT}" "Backend"
-assert_port_available "${FRONTEND_PORT}" "Frontend"
+if [[ "${START_FRONTEND}" -eq 1 ]]; then
+  assert_port_available "${FRONTEND_PORT}" "Frontend"
+fi
 
 echo "[INFO] Starting backend on http://${BACKEND_HOST}:${BACKEND_PORT}"
+echo "[INFO] Applying database migrations..."
+"${PYTHON_BIN}" -m alembic upgrade head
 (
   cd "${ROOT_DIR}"
-  "${PYTHON_BIN}" -m uvicorn Agents.api_server:app \
+  "${PYTHON_BIN}" -m uvicorn Agents.async_api:app \
     --host "${BACKEND_HOST}" \
     --port "${BACKEND_PORT}" \
     --reload
@@ -126,19 +148,29 @@ BACKEND_PID=$!
 sleep 1
 assert_process_started "${BACKEND_PID}" "Backend"
 
-echo "[INFO] Starting frontend on http://localhost:${FRONTEND_PORT}"
-(
-  cd "${FRONTEND_DIR}"
-  npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}"
-) &
-FRONTEND_PID=$!
-sleep 1
-assert_process_started "${FRONTEND_PID}" "Frontend"
+if [[ "${START_FRONTEND}" -eq 1 ]]; then
+  echo "[INFO] Starting frontend on http://localhost:${FRONTEND_PORT}"
+  (
+    cd "${FRONTEND_DIR}"
+    npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}"
+  ) &
+  FRONTEND_PID=$!
+  sleep 1
+  assert_process_started "${FRONTEND_PID}" "Frontend"
+fi
 
 echo "[INFO] Services started."
-echo "[INFO] Frontend:      http://localhost:${FRONTEND_PORT}"
+if [[ "${START_FRONTEND}" -eq 1 ]]; then
+  echo "[INFO] Frontend:      http://localhost:${FRONTEND_PORT}"
+fi
 echo "[INFO] Backend:       http://127.0.0.1:${BACKEND_PORT}/api/v1/health"
-echo "[INFO] 知识库对话:    http://127.0.0.1:${BACKEND_PORT}/rag"
+if [[ "${ENABLE_RAG:-}" =~ ^(1|true|yes)$ ]]; then
+  echo "[INFO] 知识库对话:    http://127.0.0.1:${BACKEND_PORT}/rag"
+fi
 echo "[INFO] Press Ctrl+C to stop both."
 
-wait "${BACKEND_PID}" "${FRONTEND_PID}"
+if [[ "${START_FRONTEND}" -eq 1 ]]; then
+  wait "${BACKEND_PID}" "${FRONTEND_PID}"
+else
+  wait "${BACKEND_PID}"
+fi

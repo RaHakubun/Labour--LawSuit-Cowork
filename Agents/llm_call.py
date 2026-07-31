@@ -1,18 +1,22 @@
+import os
 from typing import Any, Callable, Generator, Optional
 
 
-def get_client(base_url="https://ai.ttk.homes/v1",api_key = "sk-mCQGWjeiw8pe9zCdbpNZkuyV8kwGelZSZY29h62KHIwL0Gn2"):
+def get_client(base_url: str | None = None, api_key: str | None = None):
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError("Please install the `openai` package before calling llm_call.") from exc
 
-    # 按你的要求：URL 和 Token 直接封装在函数内部，不通过外部变量传入
-    # base_url = "https://ai.ttk.homes/v1"
-    # api_key = "sk-mCQGWjeiw8pe9zCdbpNZkuyV8kwGelZSZY29h62KHIwL0Gn2"
+    resolved_base_url = (base_url or os.getenv("LLM_BASE_URL", "")).strip()
+    resolved_api_key = (api_key or os.getenv("LLM_API_KEY", "")).strip()
+    if not resolved_base_url:
+        raise RuntimeError("LLM_BASE_URL is required")
+    if not resolved_api_key:
+        raise RuntimeError("LLM_API_KEY is required")
     return OpenAI(
-        base_url=base_url,
-        api_key=api_key,
+        base_url=resolved_base_url,
+        api_key=resolved_api_key,
     )
 
 
@@ -28,7 +32,7 @@ def chat_completion(
     model: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
-    client = get_client("https://ai.ttk.homes/v1","sk-mCQGWjeiw8pe9zCdbpNZkuyV8kwGelZSZY29h62KHIwL0Gn2")
+    client = get_client()
     merged_prompt = _merge_prompt_text(user_prompt=user_prompt, system_prompt=system_prompt)
     try:
         completion = client.chat.completions.create(
@@ -43,7 +47,7 @@ def chat_completion(
         is_auth_error = exc.__class__.__name__ == "AuthenticationError" or "401" in error_text or "无效的令牌" in error_text
         if is_auth_error:
             raise RuntimeError(
-                "Authentication failed. 请检查 llm_call.py 中 get_client() 里的 URL/Token 或 model 是否正确。"
+                "Authentication failed. 请检查 LLM_BASE_URL、LLM_API_KEY 和模型配置。"
             ) from exc
         raise
     return completion.choices[0].message.content or ""
@@ -60,7 +64,7 @@ def chat_completion_with_callback(
     if on_token is None:
         return chat_completion(user_prompt=user_prompt, system_prompt=system_prompt, model=model, **kwargs)
 
-    client = get_client("https://ai.ttk.homes/v1", "sk-mCQGWjeiw8pe9zCdbpNZkuyV8kwGelZSZY29h62KHIwL0Gn2")
+    client = get_client()
     merged_prompt = _merge_prompt_text(user_prompt=user_prompt, system_prompt=system_prompt)
     try:
         stream = client.chat.completions.create(
@@ -74,7 +78,7 @@ def chat_completion_with_callback(
         is_auth_error = exc.__class__.__name__ == "AuthenticationError" or "401" in error_text or "无效的令牌" in error_text
         if is_auth_error:
             raise RuntimeError(
-                "Authentication failed. 请检查 llm_call.py 中 get_client() 里的 URL/Token 或 model 是否正确。"
+                "Authentication failed. 请检查 LLM_BASE_URL、LLM_API_KEY 和模型配置。"
             ) from exc
         raise
 
@@ -130,24 +134,3 @@ if __name__ == "__main__":
     user_input = input()
     result = gemini_3_1_pro(user_input)
     print(result)
-
-
-##
-#
-# def gemini_3_1_pro(prompt):
-#     client = OpenAI(
-#         base_url="https://ai.ttk.homes/v1",
-#         # sk-xxx替换为自己的key
-#         api_key="sk-mCQGWjeiw8pe9zCdbpNZkuyV8kwGelZSZY29h62KHIwL0Gn2",
-#     )
-#     completion = client.chat.completions.create(
-#         model="gemini-3.1-pro-preview-cli-联网搜索",
-#         messages=[
-#             {"role": "system", "content": "You are a helpful assistant."},
-#             {"role": "user", "content": f"{prompt}"},
-#         ],
-#     )
-#     return completion.choices[0].message.content
-#
-#
-# #

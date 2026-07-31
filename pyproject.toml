@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "labour-lawsuit-cowork"
+version = "0.2.0"
+description = "Case-oriented asynchronous runtime for labour dispute analysis"
+requires-python = ">=3.11"
+dependencies = [
+  "alembic==1.16.4",
+  "asyncpg==0.30.0",
+  "fastapi==0.116.1",
+  "httpx==0.28.1",
+  "openai==1.97.1",
+  "pydantic==2.11.7",
+  "python-multipart==0.0.20",
+  "requests==2.32.4",
+  "sqlalchemy[asyncio]==2.0.41",
+  "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy==1.17.0",
+  "pytest==8.4.1",
+  "pytest-asyncio==1.1.0",
+  "ruff==0.12.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["Agents", "utils"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

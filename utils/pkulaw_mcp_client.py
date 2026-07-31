@@ -19,7 +19,6 @@ _STATUS_HINTS = {
     500: "服务器内部错误：可联系技术支持",
 }
 
-DEFAULT_PKULAW_MCP_TOKEN = "37d1a844-17b8-37b0-a34c-7132e7de8950"
 ALLOWED_MCP_SERVICE_NAMES = {
     "法条识别与溯源",
     "检索司法案例-语义",
@@ -364,7 +363,9 @@ def mcp_query(
     allowed_service_names: set[str] | None = None,
 ) -> str:
     validate_mcp_service_name(service_name, allowed_service_names=allowed_service_names)
-    resolved_token = token or os.getenv("PKULAW_MCP_TOKEN", DEFAULT_PKULAW_MCP_TOKEN)
+    resolved_token = (token or os.getenv("PKULAW_MCP_TOKEN", "")).strip()
+    if not resolved_token:
+        raise RuntimeError("PKULAW_MCP_TOKEN is required")
     result = call_service_query(
         service_name,
         query,

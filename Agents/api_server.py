@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import uuid
 import queue
+import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
@@ -19,16 +20,15 @@ from utils.labour_calculator import LabourCalculatorEngine
 
 
 def _try_mount_rag_app(app: "FastAPI") -> None:
-    """尝试挂载 rag 知识库子应用，缺少环境变量时跳过。"""
-    try:
-        from rag_app.main import create_app as create_rag_app
-        from rag_app.config import load_settings as load_rag_settings
-        rag_settings = load_rag_settings()
-        rag_sub = create_rag_app(settings=rag_settings)
-        app.mount("/rag", rag_sub)
-    except Exception as exc:
-        import sys
-        print(f"[WARN] rag 子应用未加载: {exc}", file=sys.stderr)
+    """Mount RAG only when explicitly enabled; bad configuration fails loudly."""
+    if os.getenv("ENABLE_RAG", "").strip().lower() not in {"1", "true", "yes"}:
+        return
+    from rag_app.main import create_app as create_rag_app
+    from rag_app.config import load_settings as load_rag_settings
+
+    rag_settings = load_rag_settings()
+    rag_sub = create_rag_app(settings=rag_settings)
+    app.mount("/rag", rag_sub)
 
 
 class CreateSessionRequest(BaseModel):
@@ -431,18 +431,23 @@ def create_app(service: MultiAgentSessionService | None = None) -> FastAPI:
     @app.post("/api/v1/upload", response_model=UploadFileResponse)
     async def upload_file(file: UploadFile = File(...)) -> UploadFileResponse:
         filename = file.filename or "unknown"
-        ext = Path(filename).suffix.lower()
+        display_name = Path(filename.replace("\\", "/")).name
+        if not display_name or display_name in {".", ".."}:
+            raise HTTPException(status_code=400, detail="无效的文件名")
+        if re.search(r"[\x00-\x1f]", display_name):
+            raise HTTPException(status_code=400, detail="文件名包含非法控制字符")
+        ext = Path(display_name).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
         content = await file.read()
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail="文件大小超过 20MB 限制")
-        file_id = uuid.uuid4().hex[:12]
-        safe_name = f"{file_id}_{filename}"
+        file_id = uuid.uuid4().hex
+        storage_key = f"{file_id}{ext}"
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        dest = UPLOAD_DIR / safe_name
+        dest = UPLOAD_DIR / storage_key
         dest.write_bytes(content)
-        return UploadFileResponse(file_id=file_id, name=filename, size=len(content))
+        return UploadFileResponse(file_id=file_id, name=display_name, size=len(content))
 
     return app
 

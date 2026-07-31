@@ -1464,9 +1464,6 @@ class MultiAgentSessionService:
                 controller_attachments["module_key"] = module_key
                 controller_attachments["module_scene_hints"] = list_module_scene_hints(module_key)
 
-            # If we have already asked 3 times, force routing regardless of what LLM decides
-            force_route = state.controller_ask_count >= 3
-
             controller_turn = state.controller_agent.run_turn(
                 user_input=text,
                 template_path=state.controller_template_path,
@@ -1475,27 +1472,6 @@ class MultiAgentSessionService:
             )
             controller_payload = _strict_json_object(controller_turn.agent_reply)
             controller_askmore = _extract_askmore(controller_payload)
-
-            # Force askmore=no after 3 rounds of asking
-            if force_route and controller_askmore == "yes":
-                controller_askmore = "no"
-                controller_payload["askmore"] = "no"
-                # If LLM still wants to ask, synthesize a minimal analysis block
-                if "analysis" not in controller_payload or not isinstance(controller_payload.get("analysis"), dict):
-                    controller_payload["analysis"] = {
-                        "scene_id": "dispute_arbitration",
-                        "confidence_level": "C2",
-                        "escalation_flags": "L0",
-                        "stakeholders": "用户与用人单位",
-                        "timeline_and_events": {"cause": text, "process": "三轮追问后强制路由", "result": "待业务Agent进一步分析"},
-                        "current_status": text,
-                        "user_appeal": text,
-                        "faced_problems": "信息不足，强制路由至最匹配场景",
-                        "unknowns_to_clarify": [],
-                        "route_plan": "转入业务场景Agent处理",
-                    }
-                if "user_input" not in controller_payload or not isinstance(controller_payload.get("user_input"), str) or not str(controller_payload.get("user_input")).strip():
-                    controller_payload["user_input"] = text
 
             self._apply_case_patch(
                 state,
