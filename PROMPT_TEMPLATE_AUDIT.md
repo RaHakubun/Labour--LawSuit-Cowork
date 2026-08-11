@@ -3,6 +3,7 @@
 ## 审计目标
 - Controller 模板的场景目录必须与后端全部可路由场景精确一致。
 - 每个 Scenario 模板的固定 `scene_id` 必须与对应场景精确一致。
+- Controller、Legal 和每个 Scenario 模板必须独立包含角色、输入占位和输出契约。
 - 不做自动修复，只暴露问题。
 
 ## 后端场景目录
@@ -24,5 +25,22 @@ recruitment_probation, adjustment_transfer, performance_discipline, salary_overt
 | `termination_layoff.md` | `termination_layoff` | termination_layoff | 1 | termination_layoff | 是 |
 | `work_injury.md` | `work_injury` | work_injury | 1 | work_injury | 是 |
 
+## 自包含审计
+
+| 模板 | 自包含 | 问题 |
+|---|---|---|
+| `ControllerAgent.md` | 是 | - |
+| `adjustment_transfer.md` | 是 | - |
+| `dispute_arbitration.md` | 是 | - |
+| `female_protection.md` | 是 | - |
+| `leave_medical_period.md` | 是 | - |
+| `noncompete_confidentiality.md` | 是 | - |
+| `performance_discipline.md` | 是 | - |
+| `recruitment_probation.md` | 是 | - |
+| `salary_overtime_social.md` | 是 | - |
+| `termination_layoff.md` | 是 | - |
+| `work_injury.md` | 是 | - |
+| `LegalAnalysisAgent.md` | 是 | - |
+
 ## 结论
-- Controller 覆盖全部可路由场景，Scenario 场景协议均精确匹配。
+- Controller 场景目录精确匹配，全部 Agent 模板均通过自包含与输入占位审计。

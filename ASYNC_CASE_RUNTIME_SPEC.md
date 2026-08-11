@@ -157,7 +157,7 @@ SSE 客户端只是事件订阅者。客户端断开时，只取消该订阅，�
 
 用户只与 ControllerAgent 交谈。其余专业 Agent 不是同时在线的对话线程，而是由 `CaseOrchestrator` 在单条案件命令中按需调用的 typed provider；它们的输出先经过 Schema、权限和引用校验，再由 committed event 以 Controller 身份呈现。Controller 运行时只能看到本轮用户输入和 `CaseState v2` 快照，看不到源代码、架构文档或其他 Agent 的隐含思考。
 
-提示词采用三层契约：`Prompt_Template/ControllerAgent.md` 定义唯一对话入口和六类决策语义；`Prompt_Template/ScenarioAgentBase.md` 定义所有场景共享的非对话边界，各 `ScenarioAgents/*.md` 只定义场景业务知识；`Prompt_Template/LegalAnalysisAgent.md` 定义受控上下文和引用纪律。准确的输出 JSON Schema 在运行时直接由当前 Pydantic 模型生成并附加，避免模板手写 Schema 与代码漂移。稳定模板与机器契约放入 `system` message，用户原文、CaseState 和证据正文只作为独立 JSON `user` 数据载荷，禁止链式占位符替换。模板不得保留 `askmore`、Scenario 直接追问、Agent 自行调用工具或工具失败后补结论等旧协议。
+每个提示词文件必须信息自包含：`Prompt_Template/ControllerAgent.md` 独立定义唯一对话入口、完整场景目录、六类决策、风控和输入占位；每个 `ScenarioAgents/*.md` 独立定义自身业务知识、Agent 边界、字段语义、工具/计算目录、置信度、角色适配和输入占位，不依赖共享基础提示词；`Prompt_Template/LegalAnalysisAgent.md` 独立定义四层分析方法、证据与引用纪律、报告/文书结构及原始场景和工具上下文占位。准确的输出 JSON Schema 由当前 Pydantic 模型注入各文件的 `{output_schema}`。模板以唯一运行时输入标记分成 system/user 两段，占位使用单次正则渲染，用户原文中的占位字样不会被二次替换。模板不得保留旧追问布尔输出、Scenario 直接与用户对话、Agent 自行调用工具或工具失败后补结论等协议。
 
 ### 7.1 ControllerAgent
 

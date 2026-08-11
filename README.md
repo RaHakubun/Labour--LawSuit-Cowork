@@ -2,7 +2,7 @@
 
 当前分支实现了案件级异步劳动争议工作台。每个案件由有界 `asyncio.Queue` 串行推进，Controller 统一调度 Scenario、证据解析、权威检索、确定性规则计算、LegalAnalysis 与文书生成；状态只能通过强类型 `CasePatch` 和 `DomainStateManager` 修改，PostgreSQL 事务同时提交案件版本、快照、投影与严格递增的事件序号。React 工作台只消费 committed state/events，不在浏览器生成业务结论。
 
-用户只与 ControllerAgent 对话；其他 Agent 是按需调用的专业能力，不是并行在线的聊天对象。`Prompt_Template` 中保存角色语义和劳动法场景知识，运行时再从 Pydantic 模型生成精确 JSON Schema，因此模型能看到自己的分工，而代码仍是协议的唯一事实源。
+用户只与 ControllerAgent 对话；其他 Agent 是按需调用的专业能力，不是并行在线的聊天对象。`Prompt_Template` 中的每个 Agent 文件都是信息自包含的：完整写明角色、业务知识、权限边界、输入占位和输出语义。运行时把同一文件分成 system/user 两段，安全注入案件变量，并从 Pydantic 模型填充 `{output_schema}`，因此单个模板可以独立审查，代码仍是机器协议的唯一事实源。
 
 ## 本地启动
 
