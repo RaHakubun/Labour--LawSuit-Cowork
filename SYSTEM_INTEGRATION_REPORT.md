@@ -1,6 +1,6 @@
 # 案件级异步劳动争议工作台集成报告
 
-> 更新时间：2026-08-11
+> 更新时间：2026-08-12
 >
 > 分支：`codex/complete-case-runtime`（对齐 `lbw` / `ff1e422`）
 >
@@ -26,19 +26,20 @@
 | ToolHub 与法源 | 代码完成 | typed result/error；仅连接、429、明确 5xx 重试；协议/鉴权错误立即失败 |
 | 规则、分析与文书 | 已完成 | 可追溯规则输入、受控 Legal context、争议焦点、法律分析报告和仲裁申请书版本链 |
 | API | 已完成 | command/query/evidence/SSE Router；统一错误体；事件游标分页；Last-Event-ID 与心跳 |
-| React 工作台 | 已完成 | 三角色、完整历史、pending、冲突、证据状态、法源、规则、失败事件与文书版本；无 350ms 轮询 |
+| 集成凭据 | 已完成 | 网页配置 LLM/OCR/MCP；AES-GCM 加密写入 PostgreSQL；主密钥与数据库分离；查询不返回 secret |
+| React 工作台 | 已完成 | 无令牌也可进入；连接与模型设置抽屉；三角色、完整历史、pending、冲突、证据状态、法源、规则、失败事件与文书版本；无 350ms 轮询 |
 | 真实外部 staging | 未完成 | 缺少本轮受控 LLM/MCP/OCR 凭据；不得标记为通过 |
 
 ## 3. 验证记录
 
 ### 后端
 
-- 70 项 `unittest` 通过。
+- 94 项 `unittest` 通过。
 - 使用本机 PostgreSQL 17.5 测试库执行真实事务回滚测试。
 - 覆盖幂等、恢复、并发顺序、队列容量、取消、patch rejection 与事件终态。
 - Ruff 全仓通过。
 - Mypy `Agents` 与 `utils` 通过。
-- Alembic v2 upgrade、downgrade、再次 upgrade 与 offline SQL 已通过。
+- Alembic v3 upgrade、downgrade、再次 upgrade 与 offline SQL 已通过。
 
 ### 前端
 
@@ -51,7 +52,7 @@
 
 - LLM/MCP/OCR 的 typed 协议解析和错误分类由审校协议样本覆盖。
 - 这些合约测试不是 staging 完成证明。
-- 当前 `LLM_*`、`OCR_*`、`PKULAW_MCP_TOKEN` 与 staging API 配置均未设置，所以没有生成外部成功报告。
+- 当前数据库尚未写入受控 LLM/OCR/MCP 测试凭据，staging API 也未配置，所以没有生成外部成功报告。
 
 ## 4. 发布前唯一未完成门禁
 
@@ -77,7 +78,8 @@ python scripts/run_staging_case.py \
 
 ## 5. 安全结论
 
-- 当前分支未新增密钥；`.env`、证据存储和运行产物保持忽略。
+- 当前分支未新增密钥；`.env`、`.runtime`、证据存储和运行产物保持忽略。
 - OCR 与法律推理使用独立配置，不静默复用模型。
+- 外部服务 secret 仅加密存于 PostgreSQL；加密主密钥保存在数据库外且权限为 `0600`，API 永不回传 secret。
 - 旧历史中的疑似密钥继续按已泄露处理；按既定决策不重写 Git 历史，账户所有者仍需完成撤销。
-- 真实材料必须先去身份化，凭据只进入本地 `.env` 或 secret manager。
+- 真实材料必须先去身份化；外部服务凭据只通过网页写入加密存储，运行时访问令牌与加密主密钥继续由本地文件或 secret manager 管理。

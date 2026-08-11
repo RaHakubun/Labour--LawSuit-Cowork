@@ -18,6 +18,10 @@ class BearerTokenAuthenticator:
             raise RuntimeError("at least one API bearer token is required")
         self._token_actors = normalized
 
+    @property
+    def actor_ids(self) -> frozenset[str]:
+        return frozenset(self._token_actors.values())
+
     @classmethod
     def from_environment(cls) -> "BearerTokenAuthenticator":
         raw = os.getenv("APP_API_TOKENS_JSON", "").strip()

@@ -26,6 +26,15 @@ class CaseBusyError(CaseRuntimeError):
         super().__init__("case_busy")
 
 
+class IntegrationNotConfiguredError(CaseRuntimeError):
+    code = "integration_not_configured"
+    retryable = False
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        super().__init__(f"{provider} integration is not configured")
+
+
 class PatchRejectedError(ValueError):
     code = "patch_rejected"
     retryable = False

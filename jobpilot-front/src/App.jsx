@@ -7,14 +7,17 @@ import {
   Check,
   ChevronRight,
   CircleDot,
+  Database,
   FileCheck2,
   FileText,
   Landmark,
+  KeyRound,
   LoaderCircle,
   MessageSquareText,
   Plus,
   Radio,
   Scale,
+  Settings2,
   Send,
   ShieldCheck,
   Upload,
@@ -71,7 +74,6 @@ const eventLabels = {
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem("labour-token") || "");
-  const [draftToken, setDraftToken] = useState(token);
   const [cases, setCases] = useState([]);
   const [activeCase, setActiveCase] = useState(null);
   const [eventsByCase, setEventsByCase] = useState({});
@@ -80,6 +82,8 @@ function App() {
   const [streamState, setStreamState] = useState("offline");
   const [error, setError] = useState("");
   const [showNewCase, setShowNewCase] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [integrationStatuses, setIntegrationStatuses] = useState([]);
   const terminalWaiters = useRef(new Map());
   const terminalCache = useRef(new Map());
   const busy = requestPending || Boolean(activeOperation);
@@ -121,13 +125,25 @@ function App() {
     });
   }, [api, token]);
 
+  const refreshIntegrations = useCallback(async () => {
+    if (!token) {
+      setIntegrationStatuses([]);
+      return;
+    }
+    const body = await api("/integrations");
+    setIntegrationStatuses(body.integrations);
+  }, [api, token]);
+
   useEffect(() => {
     let active = true;
     window.queueMicrotask(() => {
-      if (active) refreshCases().catch((reason) => setError(reason.message));
+      if (active && token) {
+        Promise.all([refreshCases(), refreshIntegrations()])
+          .catch((reason) => setError(reason.message));
+      }
     });
     return () => { active = false; };
-  }, [refreshCases]);
+  }, [refreshCases, refreshIntegrations, token]);
 
   const settleTerminal = useCallback((event) => {
     terminalCache.current.set(event.command_id, event);
@@ -189,6 +205,10 @@ function App() {
   }
 
   async function createCase(roleId) {
+    if (!token) {
+      setShowSettings(true);
+      return;
+    }
     const created = await api("/cases", {
       method: "POST",
       body: JSON.stringify({ role_id: roleId }),
@@ -250,19 +270,70 @@ function App() {
     });
   }
 
-  function connect() {
-    const nextToken = draftToken.trim();
-    if (!nextToken) return;
+  async function saveSettings({ accessToken, integrations }) {
+    const nextToken = accessToken.trim();
+    if (!nextToken) throw new Error("请先填写工作台访问令牌");
+    const request = async (path, options = {}) => {
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${nextToken}`,
+          "Content-Type": "application/json",
+          ...options.headers,
+        },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || body.code || "配置保存失败");
+      return body;
+    };
+    const statusMap = Object.fromEntries(integrationStatuses.map((item) => [item.provider, item]));
+    for (const item of integrations) {
+      const current = statusMap[item.provider];
+      const endpoint = item.endpoint?.trim() || null;
+      const model = item.model?.trim() || null;
+      const secret = item.secret.trim() || null;
+      const metadataChanged = current?.configured
+        && (endpoint !== (current.endpoint || null) || model !== (current.model || null));
+      if (!secret && !metadataChanged) continue;
+      await request(`/integrations/${item.provider}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          endpoint,
+          model,
+          secret,
+        }),
+      });
+    }
     localStorage.setItem("labour-token", nextToken);
     setToken(nextToken);
+    const body = await request("/integrations");
+    setIntegrationStatuses(body.integrations);
+    await refreshCasesWithToken(nextToken);
     setError("");
   }
 
-  if (!token) {
-    return <ConnectScreen value={draftToken} onChange={setDraftToken} onConnect={connect} />;
+  async function refreshCasesWithToken(accessToken) {
+    const response = await fetch(`${API_BASE}/cases`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.message || body.code || "案件列表加载失败");
+    setCases(body.cases);
+    setActiveCase((current) => (
+      body.cases.find((item) => item.case_id === current?.case_id)
+      || body.cases[0]
+      || null
+    ));
+  }
+
+  async function deleteIntegration(provider) {
+    await api(`/integrations/${provider}`, { method: "DELETE" });
+    await refreshIntegrations();
   }
 
   const activeEvents = activeCase ? eventsByCase[activeCase.case_id] || [] : [];
+  const configuredCount = integrationStatuses.filter((item) => item.configured).length;
+  const connected = Boolean(token);
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -270,7 +341,7 @@ function App() {
           <span className="brand-seal"><Scale size={21} /></span>
           <div><strong>劳争案卷</strong><span>CASE LEDGER · 02</span></div>
         </div>
-        <button className="new-case" onClick={() => setShowNewCase(true)}>
+        <button className="new-case" onClick={() => connected ? setShowNewCase(true) : setShowSettings(true)}>
           <Plus size={16} /> 建立新案卷
         </button>
         <div className="case-list-label">案卷目录</div>
@@ -297,12 +368,16 @@ function App() {
             <h1>{activeCase?.current_goal || "建立一份可追溯的劳动争议案卷"}</h1>
             {activeCase && <p>{roleLabels[activeCase.role_id]}视角 · 当前由 {activeCase.active_agent} 处理</p>}
           </div>
-          {activeCase && <div className="case-status"><span className="stage-pill"><CircleDot size={13} />{stageLabels[activeCase.stage]}</span><span className={`stream-state ${streamState}`}><Radio size={12} />{streamState === "online" ? "事件在线" : streamState === "reconnecting" ? "正在重连" : "事件离线"}</span></div>}
+          <div className="case-status">
+            {activeCase && <><span className="stage-pill"><CircleDot size={13} />{stageLabels[activeCase.stage]}</span><span className={`stream-state ${streamState}`}><Radio size={12} />{streamState === "online" ? "事件在线" : streamState === "reconnecting" ? "正在重连" : "事件离线"}</span></>}
+            <button className="settings-trigger" onClick={() => setShowSettings(true)}><Settings2 size={14} />连接设置</button>
+          </div>
         </header>
+        {(!connected || configuredCount < 3) && <div className="configuration-banner"><Database size={17} /><span><b>{connected ? `外部能力已配置 ${configuredCount}/3` : "工作台尚未连接后端"}</b><small>{connected ? "可先浏览已有案卷；缺失能力在实际调用时会明确阻止任务。" : "可以浏览界面，配置访问令牌后才能建立案卷和保存外部服务。"}</small></span><button onClick={() => setShowSettings(true)}>现在配置</button></div>}
         {error && <div className="error-banner"><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError("")}><X size={15} /></button></div>}
 
         {!activeCase ? (
-          <EmptyCase onCreate={() => setShowNewCase(true)} />
+          <EmptyCase onCreate={() => connected ? setShowNewCase(true) : setShowSettings(true)} connected={connected} />
         ) : (
           <div className="case-grid">
             <section className="conversation panel">
@@ -349,6 +424,7 @@ function App() {
       </main>
 
       {showNewCase && <NewCaseDialog onClose={() => setShowNewCase(false)} onCreate={(role) => run(() => createCase(role))} busy={requestPending} />}
+      {showSettings && <SettingsDrawer token={token} statuses={integrationStatuses} busy={requestPending} onClose={() => setShowSettings(false)} onSave={(payload) => run(async () => { await saveSettings(payload); setShowSettings(false); })} onDelete={(provider) => run(() => deleteIntegration(provider))} />}
       {activeOperation && <div className="busy-indicator"><LoaderCircle className="spin" size={17} /><span>案卷任务执行中<small>{activeOperation.commandId.slice(0, 8)}</small></span><button onClick={() => cancelActiveOperation().catch((reason) => setError(reason.message))}>取消任务</button></div>}
     </div>
   );
@@ -406,16 +482,28 @@ function useCaseEventStream({ caseId, token, onEvent, onStateChange }) {
   }, [caseId, token, onEvent, onStateChange]);
 }
 
-function ConnectScreen({ value, onChange, onConnect }) {
-  return <div className="connect-screen"><div className="connect-folio"><span>卷宗编号</span><b>LABOUR / CASE / RUNTIME</b><i /></div><div className="connect-card"><div className="connect-mark"><Scale size={31} /></div><span className="eyebrow">案件级异步劳动争议工作台</span><h1>让每一个结论，<br />都能回到事实与证据。</h1><p>输入服务端配置的访问令牌。令牌仅保存在当前浏览器，用于隔离你的案件、证据、分析与文书版本。</p><label>访问令牌<input type="password" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Bearer token" onKeyDown={(event) => event.key === "Enter" && onConnect()} /></label><button onClick={onConnect}>启封案卷 <ChevronRight size={17} /></button></div></div>;
-}
-
 function NewCaseDialog({ onClose, onCreate, busy }) {
   const [role, setRole] = useState("worker");
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="dialog" role="dialog" aria-modal="true" aria-labelledby="new-case-title"><button className="dialog-close" onClick={onClose}><X size={17} /></button><span className="eyebrow">NEW CASE FILE</span><h2 id="new-case-title">选择本案工作视角</h2><p>角色决定场景路由与提问方式，不会改变证据和法源的可追溯要求。</p><div className="role-options">{Object.entries(roleLabels).map(([id, label]) => <button key={id} className={role === id ? "selected" : ""} onClick={() => setRole(id)}><span>{id === "worker" ? "劳" : id === "lawyer" ? "律" : "企"}</span><b>{label}</b><small>{id === "worker" ? "梳理诉求与举证" : id === "lawyer" ? "代理审查与成文" : "合规应诉与风险核对"}</small></button>)}</div><button className="dialog-primary" disabled={busy} onClick={() => onCreate(role)}>{busy ? "正在建立…" : "建立案卷"}</button></div></div>;
 }
 
-function EmptyCase({ onCreate }) { return <div className="empty-state"><span className="folio-number">卷 / 〇〇</span><div className="empty-icon"><Scale size={29} /></div><h2>从一项具体争议开始</h2><p>Controller 将按事实确认、证据解析、法源检索、规则计算、法律分析与文书版本的单一主链推进。</p><button onClick={onCreate}><Plus size={17} /> 建立劳动争议案卷</button></div>; }
+function EmptyCase({ onCreate, connected }) { return <div className="empty-state"><span className="folio-number">卷 / 〇〇</span><div className="empty-icon"><Scale size={29} /></div><h2>从一项具体争议开始</h2><p>Controller 将按事实确认、证据解析、法源检索、规则计算、法律分析与文书版本的单一主链推进。</p><button onClick={onCreate}>{connected ? <><Plus size={17} /> 建立劳动争议案卷</> : <><Settings2 size={17} /> 配置后端连接</>}</button></div>; }
+
+function SettingsDrawer({ token, statuses, busy, onClose, onSave, onDelete }) {
+  const statusMap = Object.fromEntries(statuses.map((item) => [item.provider, item]));
+  const [accessToken, setAccessToken] = useState(token);
+  const [forms, setForms] = useState(() => ({
+    llm: { endpoint: statusMap.llm?.endpoint || "", model: statusMap.llm?.model || "", secret: "" },
+    ocr: { endpoint: statusMap.ocr?.endpoint || "", model: statusMap.ocr?.model || "", secret: "" },
+    mcp: { endpoint: "", model: "", secret: "" },
+  }));
+  const update = (provider, field, value) => setForms((current) => ({ ...current, [provider]: { ...current[provider], [field]: value } }));
+  const submit = (event) => {
+    event.preventDefault();
+    onSave({ accessToken, integrations: Object.entries(forms).map(([provider, value]) => ({ provider, ...value })) });
+  };
+  return <div className="settings-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><header><div><span className="eyebrow">LOCAL INTEGRATION VAULT</span><h2 id="settings-title">连接与密钥设置</h2><p>密钥提交到本机后端并加密存入 PostgreSQL，保存后不会再返回浏览器。</p></div><button onClick={onClose} aria-label="关闭设置"><X size={18} /></button></header><form onSubmit={submit}><section className="settings-section access-section"><div className="settings-section-title"><KeyRound size={16} /><span><b>工作台访问令牌</b><small>仅保存在当前浏览器，用于案件所有者鉴权</small></span></div><input type="password" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder="Bearer token" autoComplete="off" /></section>{[["llm", "法律推理 LLM", "OpenAI-compatible endpoint"], ["ocr", "视觉 OCR", "独立视觉模型 endpoint"], ["mcp", "北大法宝 MCP", "只保存访问 token"]].map(([provider, title, hint]) => { const status = statusMap[provider]; return <section className="settings-section" key={provider}><div className="settings-section-title"><span className={`config-dot ${status?.configured ? "configured" : ""}`} /><span><b>{title}</b><small>{status?.configured ? `已配置 · ${status.updated_at ? new Date(status.updated_at).toLocaleString() : ""}` : hint}</small></span>{status?.configured && <button type="button" className="remove-config" onClick={() => onDelete(provider)}>移除</button>}</div>{provider !== "mcp" && <div className="settings-grid"><label>服务地址<input type="url" value={forms[provider].endpoint} onChange={(event) => update(provider, "endpoint", event.target.value)} placeholder="https://…/v1" /></label><label>模型名称<input value={forms[provider].model} onChange={(event) => update(provider, "model", event.target.value)} placeholder={provider === "ocr" ? "vision-model" : "legal-model"} /></label></div>}<label>{provider === "mcp" ? "MCP Token" : "API Key"}<input type="password" value={forms[provider].secret} onChange={(event) => update(provider, "secret", event.target.value)} placeholder={status?.configured ? "留空则保持现有密钥" : "输入后将加密保存"} autoComplete="new-password" /></label></section>; })}<div className="settings-actions"><span><ShieldCheck size={15} />数据库只保存密文，API 不回显密钥</span><button disabled={busy || !accessToken.trim()}>{busy ? "正在保存…" : "保存并连接"}</button></div></form></aside></div>;
+}
 function PanelTitle({ icon: Icon, title, meta }) { return <div className="panel-title"><div><Icon size={17} /><h2>{title}</h2></div><span>{meta}</span></div>; }
 
 function Conversation({ events, pendingQuestions, pendingConfirmation, missingInformation }) {

@@ -6,7 +6,7 @@
 > 适用范围：当前仓库后端，以及后续恢复到仓库中的案件工作台前端
 > 架构决策：采用“ControllerAgent 高层协调 + 案件级异步事件流 + async generator 运行时”。ControllerAgent 是唯一调度中枢，其余领域概念均服务于 Controller 的受控编排；系统内部 Agent 路由不设置用户确认门禁。
 
-> 2026-08-11 实施记录：生产入口为 `Agents.async_api:app`；案件快照为 schema 2.0 并提供唯一 1.0→2.0 迁移；单一 `CaseOrchestrator`、六类 ControllerDecision、原子 StateManager、PostgreSQL/Alembic v2、案件队列恢复与严格终态、增量 ExecutionBatch、SSE 续传、证据正文分离、文本/扫描 PDF、PNG/JPEG 视觉 OCR、typed MCP/OCR 错误、同命令规则计算、分析/仲裁申请书版本链及 React 案卷工作台均已落地。本机 PostgreSQL 故障注入和 70 项后端回归已通过，前端 lint/build/audit 已通过；当前环境没有受控 LLM/MCP/OCR 凭据，因此不把外部 staging 标记为完成。
+> 2026-08-12 实施记录：生产入口为 `Agents.async_api:app`；案件快照为 schema 2.0 并提供唯一 1.0→2.0 迁移；单一 `CaseOrchestrator`、六类 ControllerDecision、原子 StateManager、PostgreSQL/Alembic v3、案件队列恢复与严格终态、增量 ExecutionBatch、SSE 续传、证据正文分离、文本/扫描 PDF、PNG/JPEG 视觉 OCR、typed MCP/OCR 错误、同命令规则计算、分析/仲裁申请书版本链、加密集成设置及 React 案卷工作台均已落地。本机 PostgreSQL 故障注入和 94 项后端回归已通过，前端 lint/build/audit 已通过；当前环境没有受控 LLM/MCP/OCR 凭据，因此不把外部 staging 标记为完成。
 
 ## 1. 决策摘要
 
@@ -256,7 +256,7 @@ data: <EventEnvelope JSON>
 
 ## 11. 安全与配置前置条件
 
-当前公开仓库中的所有硬编码 API/MCP 密钥必须视为已泄露并撤销。新代码只从环境变量或 secret manager 读取，缺失时应用启动失败并列出缺失键名，不能带默认密钥。`start_project.sh`、`Agents/llm_call.py`、`utils/pkulaw_mcp_client.py` 中不得留下真实 token、注释副本或可用默认值。
+当前公开仓库中的所有硬编码 API/MCP 密钥必须视为已泄露并撤销。应用访问令牌和数据库连接仍由环境变量或 secret manager 提供；LLM、视觉 OCR 与 MCP 配置由受信任用户在网页设置面板写入 PostgreSQL。服务密钥使用 AES-GCM 加密，主密钥只保存在数据库之外的 `INTEGRATION_MASTER_KEY_FILE`（默认 `.runtime/integration-master-key`，权限 `0600`）。查询接口只返回脱敏状态，不返回密钥。缺少外部集成配置不阻止工作台启动，但调用对应能力必须以 `integration_not_configured` 明确失败，不得 fallback。`start_project.sh`、`Agents/llm_call.py`、`utils/pkulaw_mcp_client.py` 中不得留下真实 token、注释副本或可用默认值。
 
 API 至少实现案件所有权鉴权，任何 list/get/delete/events/artifact 接口都按 `actor_id/tenant_id` 过滤。上传必须阻止路径穿越、限制大小和 MIME、使用服务端存储键，并为后续恶意文件扫描保留状态。事件和日志不能记录完整 secret，也不能默认记录整份敏感原文；工具原始响应进入受控存储，用户事件只返回摘要和引用 ID。
 

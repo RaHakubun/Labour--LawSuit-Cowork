@@ -30,12 +30,15 @@ cleanup() {
 
 ensure_command lsof
 
-for required_var in LLM_BASE_URL LLM_API_KEY LLM_MODEL OCR_BASE_URL OCR_API_KEY OCR_MODEL PKULAW_MCP_TOKEN DATABASE_URL APP_API_TOKENS_JSON; do
+for required_var in DATABASE_URL APP_API_TOKENS_JSON; do
   if [[ -z "${!required_var:-}" ]]; then
     echo "[ERROR] ${required_var} is required."
     exit 1
   fi
 done
+
+echo "[INFO] LLM, OCR, and MCP credentials are configured after login in the web settings panel."
+echo "[INFO] They are encrypted in PostgreSQL; the encryption key remains outside the database."
 
 resolve_python_bin() {
   # Prefer the active env interpreter (usually `python` in conda/venv).

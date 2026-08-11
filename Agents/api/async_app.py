@@ -25,6 +25,7 @@ from Agents.application.legal_models import LegalResultProvider
 from Agents.application.orchestrator import CaseOrchestrator
 from Agents.application.scenario_models import ScenarioResultProvider
 from Agents.infrastructure.evidence_storage import LocalEvidenceStorage
+from Agents.infrastructure.integration_credentials import PostgresIntegrationCredentialStore
 from Agents.infrastructure.memory_uow import InMemoryCaseUnitOfWork
 from Agents.infrastructure.uow import CaseUnitOfWork
 from Agents.runtime.registry import CaseRuntimeRegistry
@@ -36,6 +37,7 @@ from .auth import BearerTokenAuthenticator
 from .routes.commands import command_router
 from .routes.events import event_stream_router
 from .routes.evidence import evidence_router
+from .routes.integrations import integration_router
 from .routes.queries import query_router
 
 
@@ -51,6 +53,8 @@ def create_async_case_app(
     allowed_origins: list[str] | None = None,
     shutdown_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
     vision_ocr: VisionOcrAdapter | None = None,
+    integration_store: PostgresIntegrationCredentialStore | None = None,
+    integration_admin_actor_ids: frozenset[str] | None = None,
 ) -> FastAPI:
     uow = unit_of_work or InMemoryCaseUnitOfWork()
     storage = evidence_storage or LocalEvidenceStorage(
@@ -112,6 +116,7 @@ def create_async_case_app(
     app.state.runtime_registry = registry
     app.state.command_service = command_service
     app.state.evidence_storage = storage
+    app.state.integration_store = integration_store
 
     def error_body(
         *,
@@ -166,7 +171,11 @@ def create_async_case_app(
         exc: RequestValidationError,
     ) -> JSONResponse:
         fields = [
-            {key: value for key, value in error.items() if key not in {"ctx", "url"}}
+            {
+                key: value
+                for key, value in error.items()
+                if key not in {"ctx", "input", "url"}
+            }
             for error in exc.errors()
         ]
         return JSONResponse(
@@ -229,4 +238,19 @@ def create_async_case_app(
             owned_case=owned_case,
         )
     )
+    if integration_store is not None:
+        admin_actor_ids = integration_admin_actor_ids
+        if admin_actor_ids is None:
+            if len(authenticator.actor_ids) != 1:
+                raise RuntimeError(
+                    "INTEGRATION_ADMIN_ACTOR_IDS is required when multiple actors are configured"
+                )
+            admin_actor_ids = authenticator.actor_ids
+        app.include_router(
+            integration_router(
+                authenticator=authenticator,
+                store=integration_store,
+                admin_actor_ids=admin_actor_ids,
+            )
+        )
     return app

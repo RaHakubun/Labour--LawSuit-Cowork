@@ -16,14 +16,7 @@ python -m pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-编辑 `.env`，设置以下独立边界：
-
-- 法律推理：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`
-- 视觉 OCR：`OCR_BASE_URL`、`OCR_API_KEY`、`OCR_MODEL`
-- 法源 MCP：`PKULAW_MCP_TOKEN`
-- 运行时：`DATABASE_URL`、`APP_API_TOKENS_JSON`
-
-OCR 不复用法律推理模型；任一边界缺少配置时启动明确失败。`APP_API_TOKENS_JSON` 是 Bearer token 到 actor ID 的映射，例如 `{"a-long-random-token":"local-user"}`。加载环境变量后启动：
+编辑 `.env`，设置 `DATABASE_URL` 和 `APP_API_TOKENS_JSON`。后者是 Bearer token 到 actor ID 的映射，例如 `{"a-long-random-token":"local-user"}`。只有一个 actor 时，该 actor 自动成为集成管理员；配置多个 actor 时必须通过逗号分隔的 `INTEGRATION_ADMIN_ACTOR_IDS` 指定允许修改安装级集成配置的 actor。`INTEGRATION_MASTER_KEY_FILE` 可选，默认写入 `.runtime/integration-master-key`；该文件权限为 `0600`，必须与 PostgreSQL 分开保存并纳入备份。加载环境变量后启动：
 
 ```bash
 set -a
@@ -32,7 +25,7 @@ set +a
 ./start_project.sh
 ```
 
-启动脚本会先执行 `alembic upgrade head`，再以单 Uvicorn worker 启动 `Agents.async_api:app`，并启动 `jobpilot-front`。在实现跨进程命令认领前不要增加 worker 数量。
+启动脚本会先执行 `alembic upgrade head`，再以单 Uvicorn worker 启动 `Agents.async_api:app`，并启动 `jobpilot-front`。浏览器会直接进入工作台；点击右上角“连接与模型设置”，先保存访问令牌，再配置法律推理 LLM、视觉 OCR 和法源 MCP。服务密钥使用 AES-GCM 加密后写入 PostgreSQL，读取接口只返回是否已配置、端点、模型和更新时间，绝不返回密钥。OCR 不复用法律推理模型；未配置某项服务不会阻止工作台启动，但调用对应能力时会明确返回 `integration_not_configured`，不会静默降级或生成替代结论。在实现跨进程命令认领前不要增加 worker 数量。
 
 ## API 主链
 
@@ -44,6 +37,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/cases \
   -H "Content-Type: application/json" \
   -d '{"role_id":"worker"}'
 ```
+
+集成设置接口为 `/api/v1/integrations`：`GET` 查看三个服务的脱敏状态，`PUT /{provider}` 写入或轮换配置，`DELETE /{provider}` 删除配置；`provider` 仅允许 `llm`、`ocr`、`mcp`。这些配置是当前安装实例共享的，写入和删除仅允许集成管理员 actor；其他有效 actor 只能读取脱敏状态。
 
 提交用户消息时必须提供幂等键和当前案件版本：
 

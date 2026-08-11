@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -162,6 +163,24 @@ class ArtifactRow(Base):
     title: Mapped[str] = mapped_column(String(500))
     stale: Mapped[bool]
     revisions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationCredentialRow(Base):
+    __tablename__ = "integration_credentials"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('llm', 'ocr', 'mcp')",
+            name="ck_integration_credentials_provider",
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    endpoint: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    encrypted_secret: Mapped[bytes] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
