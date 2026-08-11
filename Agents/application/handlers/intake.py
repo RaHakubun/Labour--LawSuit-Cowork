@@ -4,14 +4,20 @@ from collections.abc import AsyncIterator
 
 from Agents.application.decisions import (
     AskClarificationDecision,
+    ContinueCurrentStageDecision,
     ControllerDecisionProvider,
+    RequestAnalysisDecision,
+    RequestDocumentDecision,
+    RequestFactConfirmationDecision,
     RouteScenarioDecision,
 )
+from Agents.application.handlers.legal import LegalCommandHandler
 from Agents.application.handlers.scenario import ScenarioStageHandler
 from Agents.domain.case_state import (
     CaseAggregate,
     CaseStage,
     PendingQuestion,
+    PendingConfirmation,
 )
 from Agents.domain.commands import (
     CaseCommand,
@@ -29,9 +35,12 @@ class ControllerCommandHandler:
         self,
         decision_provider: ControllerDecisionProvider,
         scenario_handler: ScenarioStageHandler,
+        *,
+        legal_handler: LegalCommandHandler | None = None,
     ) -> None:
         self._decision_provider = decision_provider
         self._scenario_handler = scenario_handler
+        self._legal_handler = legal_handler
 
     def supports(self, command_type: str) -> bool:
         return command_type == "submit_user_message"
@@ -160,6 +169,64 @@ class ControllerCommandHandler:
                     ),
                 ],
             )
+            async for batch in self._scenario_handler.execute_stage(
+                command,
+                aggregate,
+                scene_id=scene_id,
+            ):
+                yield batch
+            return
+
+        if isinstance(decision, RequestFactConfirmationDecision):
+            confirmation = PendingConfirmation(
+                confirmation_type="fact",
+                prompt=decision.reason,
+                target_ids=decision.fact_ids,
+            )
+            yield ExecutionBatch(
+                patch=CasePatch(
+                    producer="ControllerAgent",
+                    base_version=aggregate.version,
+                    operations=[
+                        SetInteraction(
+                            pending_confirmation=confirmation,
+                            blocked_on=decision.fact_ids,
+                        )
+                    ],
+                ),
+                events=[
+                    EventDraft(
+                        event_type="fact.confirmation_requested",
+                        producer="ControllerAgent",
+                        visibility="user",
+                        payload=confirmation.model_dump(mode="json"),
+                    )
+                ],
+            )
+            return
+
+        if isinstance(decision, RequestAnalysisDecision):
+            if self._legal_handler is None:
+                raise RuntimeError("legal handler is required for request_analysis")
+            async for batch in self._legal_handler.execute_analysis(command, aggregate):
+                yield batch
+            return
+
+        if isinstance(decision, RequestDocumentDecision):
+            if self._legal_handler is None:
+                raise RuntimeError("legal handler is required for request_document")
+            async for batch in self._legal_handler.execute_document(
+                command,
+                aggregate,
+                decision.document_type,
+            ):
+                yield batch
+            return
+
+        if isinstance(decision, ContinueCurrentStageDecision):
+            scene_id = aggregate.state.interaction.active_scene_id
+            if not scene_id:
+                raise ValueError("cannot continue current stage without an active scene")
             async for batch in self._scenario_handler.execute_stage(
                 command,
                 aggregate,

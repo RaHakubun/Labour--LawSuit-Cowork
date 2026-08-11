@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from Agents.application.command_service import CaseCommandService
+from Agents.application.orchestrator import CaseOrchestrator
 from Agents.application.decisions import ControllerDecisionProvider
 from Agents.application.handlers.intake import ControllerCommandHandler
 from Agents.application.handlers.evidence import EvidenceCommandHandler
@@ -68,13 +69,24 @@ def create_async_case_app(
         scenario_provider=scenario_provider,
         tool_hub=tool_hub,
     )
-    handlers: list[CommandHandler] = [
-        ControllerCommandHandler(decision_provider, scenario_handler),
+    legal_handler = LegalCommandHandler(legal_provider)
+    stage_handlers: list[CommandHandler] = [
         EvidenceCommandHandler(EvidenceParser(storage.path_for)),
         ConfirmFactCommandHandler(),
         RuleCalculationCommandHandler(),
+        legal_handler,
     ]
-    handlers.append(LegalCommandHandler(legal_provider))
+    controller_handler = ControllerCommandHandler(
+        decision_provider,
+        scenario_handler,
+        legal_handler=legal_handler,
+    )
+    handlers: list[CommandHandler] = [
+        CaseOrchestrator(
+            controller_handler=controller_handler,
+            stage_handlers=stage_handlers,
+        )
+    ]
     registry = CaseRuntimeRegistry(
         unit_of_work=uow,
         handlers=handlers,

@@ -187,6 +187,10 @@ class DomainStateManager:
                 interaction.last_user_input = operation.last_user_input
             if operation.pending_questions is not None:
                 interaction.pending_questions = operation.pending_questions
+            if operation.clear_pending_confirmation:
+                interaction.pending_confirmation = None
+            elif operation.pending_confirmation is not None:
+                interaction.pending_confirmation = operation.pending_confirmation
             if operation.blocked_on is not None:
                 interaction.blocked_on = operation.blocked_on
             return
@@ -197,7 +201,7 @@ class DomainStateManager:
             if existing is not None and existing.value != incoming.value:
                 if producer == "User" and incoming.status is FactStatus.CONFIRMED:
                     state.facts.items[incoming.fact_id] = incoming
-                    self._mark_outputs_stale(state)
+                    self._mark_outputs_stale(state, fact_ids={incoming.fact_id})
                     return
                 existing.status = FactStatus.DISPUTED
                 conflict = FactConflict(
@@ -206,10 +210,10 @@ class DomainStateManager:
                     incoming=incoming,
                 )
                 state.facts.conflicts[conflict.conflict_id] = conflict
-                self._mark_outputs_stale(state)
+                self._mark_outputs_stale(state, fact_ids={incoming.fact_id})
                 return
             state.facts.items[incoming.fact_id] = incoming
-            self._mark_outputs_stale(state)
+            self._mark_outputs_stale(state, fact_ids={incoming.fact_id})
             return
 
         if isinstance(operation, ResolveFactConflict):
@@ -217,7 +221,10 @@ class DomainStateManager:
             conflict.resolved = True
             conflict.resolution_note = operation.resolution_note
             state.facts.items[operation.confirmed_fact.fact_id] = operation.confirmed_fact
-            self._mark_outputs_stale(state)
+            self._mark_outputs_stale(
+                state,
+                fact_ids={operation.confirmed_fact.fact_id},
+            )
             return
 
         if isinstance(operation, RegisterEvidence):
@@ -229,7 +236,10 @@ class DomainStateManager:
 
         if isinstance(operation, UpdateEvidence):
             state.evidence.items[operation.evidence.evidence_id] = operation.evidence
-            self._mark_outputs_stale(state)
+            self._mark_outputs_stale(
+                state,
+                evidence_ids={operation.evidence.evidence_id},
+            )
             return
 
         if isinstance(operation, LinkEvidenceToFact):
@@ -271,9 +281,21 @@ class DomainStateManager:
 
         raise ValueError(f"unsupported patch operation: {operation}")
 
-    def _mark_outputs_stale(self, state: CaseState) -> None:
+    def _mark_outputs_stale(
+        self,
+        state: CaseState,
+        *,
+        fact_ids: set[str] | None = None,
+        evidence_ids: set[object] | None = None,
+    ) -> None:
+        changed_facts = fact_ids or set()
+        changed_evidence = evidence_ids or set()
         for artifact in state.outputs.artifacts.values():
-            artifact.stale = True
+            revision = artifact.revisions[-1]
+            if changed_facts.intersection(revision.fact_ids) or changed_evidence.intersection(
+                revision.evidence_ids
+            ):
+                artifact.stale = True
 
     def _rejected(
         self,

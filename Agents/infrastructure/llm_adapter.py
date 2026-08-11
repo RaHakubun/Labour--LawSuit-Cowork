@@ -88,6 +88,12 @@ class AsyncOpenAIControllerDecisionProvider:
             '"required_fact_ids":["..."]}。'
             '若可进入场景：{"decision_type":"route_scenario","scene_id":"...",'
             '"reason":"...","current_goal":"..."}。'
+            '若需用户确认事实：{"decision_type":"request_fact_confirmation",'
+            '"fact_ids":["..."],"reason":"..."}。'
+            '若可分析：{"decision_type":"request_analysis","reason":"..."}。'
+            '若可生成文书：{"decision_type":"request_document",'
+            '"document_type":"labour_arbitration_application","reason":"..."}。'
+            '若应继续当前阶段：{"decision_type":"continue_current_stage","reason":"..."}。'
             "不得虚构缺失事实。"
         )
         prompt = (

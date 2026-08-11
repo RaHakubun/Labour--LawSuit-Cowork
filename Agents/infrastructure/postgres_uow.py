@@ -10,6 +10,7 @@ from Agents.domain.case_state import CaseAggregate, utc_now
 from Agents.domain.commands import CancelOperationPayload, CaseCommand
 from Agents.domain.events import EventDraft, EventEnvelope
 from Agents.domain.state_manager import DomainStateManager
+from Agents.domain.snapshot_migrations import load_case_aggregate
 
 from .database import (
     ArtifactRow,
@@ -66,7 +67,7 @@ class PostgresCaseUnitOfWork:
             row = await session.get(CaseRow, case_id)
             if row is None:
                 raise KeyError(f"case not found: {case_id}")
-            return CaseAggregate.model_validate(row.state_json)
+            return load_case_aggregate(row.state_json)
 
     async def list_cases(self, owner_id: str) -> list[CaseAggregate]:
         async with self._session_factory() as session:
@@ -77,7 +78,7 @@ class PostgresCaseUnitOfWork:
                     .order_by(CaseRow.updated_at.desc())
                 )
             ).all()
-            return [CaseAggregate.model_validate(row.state_json) for row in rows]
+            return [load_case_aggregate(row.state_json) for row in rows]
 
     async def accept_command(self, command: CaseCommand) -> AcceptCommandResult:
         async with self._session_factory.begin() as session:
@@ -139,7 +140,7 @@ class PostgresCaseUnitOfWork:
     ) -> list[EventEnvelope]:
         async with self._session_factory.begin() as session:
             case_row = await self._locked_case(session, command.case_id)
-            aggregate = CaseAggregate.model_validate(case_row.state_json)
+            aggregate = load_case_aggregate(case_row.state_json)
             committed: list[EventEnvelope] = []
             if batch.patch is not None:
                 committed.append(

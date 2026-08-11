@@ -28,16 +28,24 @@ class LegalCommandHandler:
 
     async def execute(self, command: CaseCommand, aggregate: CaseAggregate) -> AsyncIterator[ExecutionBatch]:
         if isinstance(command.payload, RequestAnalysisPayload):
-            async for batch in self._analyze(aggregate):
+            async for batch in self.execute_analysis(command, aggregate):
                 yield batch
             return
         if isinstance(command.payload, RequestDocumentPayload):
-            async for batch in self._draft(aggregate, command.payload.document_type):
+            async for batch in self.execute_document(
+                command,
+                aggregate,
+                command.payload.document_type,
+            ):
                 yield batch
             return
         raise TypeError("legal handler received an invalid payload")
 
-    async def _analyze(self, aggregate: CaseAggregate) -> AsyncIterator[ExecutionBatch]:
+    async def execute_analysis(
+        self,
+        command: CaseCommand,
+        aggregate: CaseAggregate,
+    ) -> AsyncIterator[ExecutionBatch]:
         self._context_builder.assert_ready(aggregate)
         if aggregate.state.interaction.stage is not CaseStage.ANALYSIS_READY:
             yield ExecutionBatch(
@@ -92,7 +100,12 @@ class LegalCommandHandler:
             ],
         )
 
-    async def _draft(self, aggregate: CaseAggregate, document_type: str) -> AsyncIterator[ExecutionBatch]:
+    async def execute_document(
+        self,
+        command: CaseCommand,
+        aggregate: CaseAggregate,
+        document_type: str,
+    ) -> AsyncIterator[ExecutionBatch]:
         self._context_builder.assert_ready(aggregate)
         if not aggregate.state.analysis.issues:
             raise ValueError("request analysis before generating a document")

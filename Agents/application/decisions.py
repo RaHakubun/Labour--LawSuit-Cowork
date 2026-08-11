@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import Field
 
@@ -20,7 +20,37 @@ class RouteScenarioDecision(StrictModel):
     current_goal: str = Field(min_length=1)
 
 
-ControllerDecision = AskClarificationDecision | RouteScenarioDecision
+class RequestFactConfirmationDecision(StrictModel):
+    decision_type: Literal["request_fact_confirmation"] = "request_fact_confirmation"
+    fact_ids: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class RequestAnalysisDecision(StrictModel):
+    decision_type: Literal["request_analysis"] = "request_analysis"
+    reason: str = Field(min_length=1)
+
+
+class RequestDocumentDecision(StrictModel):
+    decision_type: Literal["request_document"] = "request_document"
+    document_type: Literal["legal_analysis_report", "labour_arbitration_application"]
+    reason: str = Field(min_length=1)
+
+
+class ContinueCurrentStageDecision(StrictModel):
+    decision_type: Literal["continue_current_stage"] = "continue_current_stage"
+    reason: str = Field(min_length=1)
+
+
+ControllerDecision = Annotated[
+    AskClarificationDecision
+    | RouteScenarioDecision
+    | RequestFactConfirmationDecision
+    | RequestAnalysisDecision
+    | RequestDocumentDecision
+    | ContinueCurrentStageDecision,
+    Field(discriminator="decision_type"),
+]
 
 
 class ControllerDecisionProvider(Protocol):

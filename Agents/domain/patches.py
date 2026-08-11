@@ -13,6 +13,7 @@ from .case_state import (
     IssueCard,
     OutputArtifact,
     PendingQuestion,
+    PendingConfirmation,
     RuleResult,
     StrictModel,
 )
@@ -26,6 +27,8 @@ class SetInteraction(StrictModel):
     active_scene_id: str | None = None
     last_user_input: str | None = None
     pending_questions: list[PendingQuestion] | None = None
+    pending_confirmation: PendingConfirmation | None = None
+    clear_pending_confirmation: bool = False
     blocked_on: list[str] | None = None
 
 

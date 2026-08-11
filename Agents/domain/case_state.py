@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-SCHEMA_VERSION: Final[Literal["1.0"]] = "1.0"
+SCHEMA_VERSION: Final[Literal["2.0"]] = "2.0"
 
 
 def utc_now() -> datetime:
@@ -38,14 +38,24 @@ class FactStatus(StrEnum):
 
 
 class PendingQuestion(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     question_id: UUID = Field(default_factory=uuid4)
     text: str = Field(min_length=1)
     required_fact_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class PendingConfirmation(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    confirmation_id: UUID = Field(default_factory=uuid4)
+    confirmation_type: Literal["fact", "material_authorization", "high_impact_action"]
+    prompt: str = Field(min_length=1)
+    target_ids: list[str] = Field(min_length=1)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class InteractionState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     stage: CaseStage = CaseStage.INTAKE
     active_agent: str = "ControllerAgent"
     user_role: str = ""
@@ -53,16 +63,18 @@ class InteractionState(StrictModel):
     active_scene_id: str = ""
     last_user_input: str = ""
     pending_questions: list[PendingQuestion] = Field(default_factory=list)
+    pending_confirmation: PendingConfirmation | None = None
     blocked_on: list[str] = Field(default_factory=list)
 
 
 class FactSource(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     kind: Literal["user", "agent", "evidence", "rule"]
     ref_id: str = Field(min_length=1)
 
 
 class FactItem(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     fact_id: str = Field(min_length=1)
     value: Any
     status: FactStatus
@@ -80,7 +92,7 @@ class FactItem(StrictModel):
 
 
 class FactConflict(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     conflict_id: UUID = Field(default_factory=uuid4)
     fact_id: str = Field(min_length=1)
     existing: FactItem
@@ -91,7 +103,7 @@ class FactConflict(StrictModel):
 
 
 class FactsState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     items: dict[str, FactItem] = Field(default_factory=dict)
     conflicts: dict[UUID, FactConflict] = Field(default_factory=dict)
 
@@ -104,7 +116,7 @@ class EvidenceStatus(StrEnum):
 
 
 class EvidenceItem(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     evidence_id: UUID = Field(default_factory=uuid4)
     display_name: str = Field(min_length=1)
     storage_key: str = Field(min_length=1)
@@ -120,13 +132,36 @@ class EvidenceItem(StrictModel):
     authenticity_risk: str = ""
 
 
+class EvidenceExtraction(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    extraction_id: UUID = Field(default_factory=uuid4)
+    evidence_id: UUID
+    text_ref: str = Field(min_length=1)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parser_name: str = Field(min_length=1)
+    character_count: int = Field(ge=1)
+    page_count: int | None = Field(default=None, ge=1)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class FactEvidenceLink(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    link_id: UUID = Field(default_factory=uuid4)
+    evidence_id: UUID
+    fact_id: str = Field(min_length=1)
+    excerpt_ref: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class EvidenceState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     items: dict[UUID, EvidenceItem] = Field(default_factory=dict)
+    extractions: dict[UUID, EvidenceExtraction] = Field(default_factory=dict)
+    fact_links: dict[UUID, FactEvidenceLink] = Field(default_factory=dict)
 
 
 class AuthorityRef(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     authority_id: UUID = Field(default_factory=uuid4)
     tool_name: str = Field(min_length=1)
     query: str = Field(min_length=1)
@@ -140,7 +175,7 @@ class AuthorityRef(StrictModel):
 
 
 class IssueCard(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     issue_id: UUID = Field(default_factory=uuid4)
     title: str = Field(min_length=1)
     conclusion: str = ""
@@ -150,7 +185,7 @@ class IssueCard(StrictModel):
 
 
 class RuleResult(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     result_id: UUID = Field(default_factory=uuid4)
     rule: str = Field(min_length=1)
     input_case_version: int = Field(ge=0)
@@ -161,16 +196,35 @@ class RuleResult(StrictModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class AnalysisNote(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    note_id: UUID = Field(default_factory=uuid4)
+    content: str = Field(min_length=1)
+    fact_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    authority_ids: list[UUID] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class MissingInformation(StrictModel):
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
+    information_id: UUID = Field(default_factory=uuid4)
+    description: str = Field(min_length=1)
+    required_fact_ids: list[str] = Field(default_factory=list)
+    blocking: bool = True
+
+
 class AnalysisState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     issues: dict[UUID, IssueCard] = Field(default_factory=dict)
     authorities: dict[UUID, AuthorityRef] = Field(default_factory=dict)
     rule_results: dict[UUID, RuleResult] = Field(default_factory=dict)
-    missing_information: list[str] = Field(default_factory=list)
+    notes: dict[UUID, AnalysisNote] = Field(default_factory=dict)
+    missing_information: list[MissingInformation] = Field(default_factory=list)
 
 
 class ArtifactRevision(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     revision: int = Field(ge=1)
     content: str = Field(min_length=1)
     case_version: int = Field(ge=0)
@@ -182,7 +236,7 @@ class ArtifactRevision(StrictModel):
 
 
 class OutputArtifact(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     artifact_id: UUID = Field(default_factory=uuid4)
     artifact_type: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -191,12 +245,12 @@ class OutputArtifact(StrictModel):
 
 
 class OutputsState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     artifacts: dict[UUID, OutputArtifact] = Field(default_factory=dict)
 
 
 class CaseState(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     interaction: InteractionState = Field(default_factory=InteractionState)
     facts: FactsState = Field(default_factory=FactsState)
     evidence: EvidenceState = Field(default_factory=EvidenceState)
@@ -205,7 +259,7 @@ class CaseState(StrictModel):
 
 
 class CaseAggregate(StrictModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["2.0"] = SCHEMA_VERSION
     case_id: UUID = Field(default_factory=uuid4)
     owner_id: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
