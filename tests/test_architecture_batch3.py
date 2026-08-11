@@ -5,12 +5,14 @@ import unittest
 from pathlib import Path
 
 from Agents.domain.case_state import (
+    AuthorityRef,
     CaseAggregate,
     EvidenceItem,
     EvidenceStatus,
     FactItem,
     FactSource,
     FactStatus,
+    RuleResult,
 )
 from Agents.domain.patches import CasePatch, LinkEvidenceToFact, RegisterEvidence, UpsertFact
 from Agents.domain.state_manager import DomainStateManager
@@ -175,6 +177,55 @@ class EvidenceArchitectureBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.unconfirmed_fact_ids, ())
         self.assertEqual(plan.payload.inputs, {"monthly_wage": 12_000})
         self.assertEqual(plan.payload.fact_ids, ["employment.monthly_wage"])
+
+    async def test_legal_readiness_waits_for_processing_evidence_and_excludes_stale_rules(
+        self,
+    ):
+        aggregate = CaseAggregate.create(owner_id="worker-1", role_id="worker")
+        fact = FactItem(
+            fact_id="employment.monthly_wage",
+            value=12_000,
+            status=FactStatus.CONFIRMED,
+            source=FactSource(kind="user", ref_id="confirmation-1"),
+        )
+        aggregate.state.facts.items[fact.fact_id] = fact
+        authority = AuthorityRef(
+            tool_name="检索法律法规-语义",
+            query="工资支付规则",
+            source_id="law-wage-1",
+            content_hash="b" * 64,
+        )
+        aggregate.state.analysis.authorities[authority.authority_id] = authority
+        evidence = EvidenceItem(
+            display_name="工资流水.txt",
+            storage_key="1" * 32 + ".txt",
+            media_type="text/plain",
+            sha256="c" * 64,
+            size=10,
+            status=EvidenceStatus.PARSING,
+        )
+        aggregate.state.evidence.items[evidence.evidence_id] = evidence
+        stale_result = RuleResult(
+            rule="wage_base",
+            input_case_version=0,
+            result={"result": {"monthly_wage": 10_000}},
+            fact_ids=[fact.fact_id],
+            stale=True,
+        )
+        aggregate.state.analysis.rule_results[stale_result.result_id] = stale_result
+
+        async def unused_text_reader(_text_ref: str) -> str:
+            raise AssertionError("failed evidence must not be read")
+
+        builder = LegalAnalysisContextBuilder(text_reader=unused_text_reader)
+        with self.assertRaisesRegex(ValueError, "evidence still processing"):
+            builder.assert_ready(aggregate)
+
+        evidence.status = EvidenceStatus.FAILED
+        builder.assert_ready(aggregate)
+        context = await builder.build(aggregate)
+        self.assertEqual(context["evidence"], [])
+        self.assertEqual(context["rule_results"], [])
 
     async def test_mcp_retries_only_typed_transient_http_failures(self):
         attempts = 0

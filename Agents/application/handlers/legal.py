@@ -80,6 +80,7 @@ class LegalCommandHandler:
                 fact_ids=item.fact_ids,
                 evidence_ids=item.evidence_ids,
                 authority_ids=item.authority_ids,
+                rule_result_ids=item.rule_result_ids,
             )
             for item in result.issues
         ]
@@ -91,6 +92,14 @@ class LegalCommandHandler:
             fact_ids=sorted({fact_id for item in result.issues for fact_id in item.fact_ids}),
             evidence_ids=sorted({evidence_id for item in result.issues for evidence_id in item.evidence_ids}, key=str),
             authority_ids=sorted({authority_id for item in result.issues for authority_id in item.authority_ids}, key=str),
+            rule_result_ids=sorted(
+                {
+                    result_id
+                    for item in result.issues
+                    for result_id in item.rule_result_ids
+                },
+                key=str,
+            ),
         )
         yield ExecutionBatch(
             patch=CasePatch(

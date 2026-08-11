@@ -70,8 +70,8 @@ def _to_markdown(results: list[TemplateAuditResult]) -> str:
     lines.append("# Prompt Template 审计报告")
     lines.append("")
     lines.append("## 审计目标")
-    lines.append("- Controller 模板必须覆盖后端全部可路由场景；运行时 contract 收窄到后端目录。")
-    lines.append("- 每个 Scenario 模板的 `analysis.scene_id` 必须与对应场景精确一致。")
+    lines.append("- Controller 模板的场景目录必须与后端全部可路由场景精确一致。")
+    lines.append("- 每个 Scenario 模板的固定 `scene_id` 必须与对应场景精确一致。")
     lines.append("- 不做自动修复，只暴露问题。")
     lines.append("")
     lines.append("## 后端场景目录")
@@ -118,15 +118,8 @@ def main() -> int:
         raise FileNotFoundError(f"controller template not found: {controller_template}")
 
     controller_result = _audit_template(controller_template, tuple(SCENE_IDS))
-    results: list[TemplateAuditResult] = [
-        TemplateAuditResult(
-            path=controller_result.path,
-            scene_hint=controller_result.scene_hint,
-            expected_values=controller_result.expected_values,
-            enum_values=controller_result.enum_values,
-            is_match=set(SCENE_IDS).issubset(controller_result.enum_values),
-        )
-    ]
+    results: list[TemplateAuditResult] = [controller_result]
+    audited_scene_paths: set[tuple[str, Path]] = set()
     for role_id, scene_map in ROLE_SCENE_TEMPLATE_PATHS.items():
         for scene_id, rel_path in sorted(scene_map.items()):
             path = (root / rel_path).resolve()
@@ -134,11 +127,15 @@ def main() -> int:
                 raise FileNotFoundError(
                     f"scenario template not found for role_id={role_id}, scene_id={scene_id}: {path}"
                 )
+            scene_path = (scene_id, path)
+            if scene_path in audited_scene_paths:
+                continue
+            audited_scene_paths.add(scene_path)
             item = _audit_template(path, (scene_id,))
             results.append(
                 TemplateAuditResult(
                     path=item.path,
-                    scene_hint=f"{role_id}:{scene_id}",
+                    scene_hint=scene_id,
                     expected_values=item.expected_values,
                     enum_values=item.enum_values,
                     is_match=item.is_match,

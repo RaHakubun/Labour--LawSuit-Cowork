@@ -14,6 +14,7 @@ class LegalIssueResult(StrictModel):
     fact_ids: list[str] = Field(min_length=1)
     evidence_ids: list[UUID] = Field(default_factory=list)
     authority_ids: list[UUID] = Field(min_length=1)
+    rule_result_ids: list[UUID] = Field(default_factory=list)
 
 
 class LegalAnalysisResult(StrictModel):

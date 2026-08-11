@@ -1,4 +1,5 @@
 import unittest
+from uuid import uuid4
 
 from Agents.domain.case_state import (
     ArtifactRevision,
@@ -6,9 +7,18 @@ from Agents.domain.case_state import (
     FactItem,
     FactSource,
     FactStatus,
+    IssueCard,
     OutputArtifact,
+    RuleResult,
 )
-from Agents.domain.patches import AddArtifactRevision, CasePatch, SetInteraction, UpsertFact
+from Agents.domain.patches import (
+    AddArtifactRevision,
+    AddRuleResult,
+    CasePatch,
+    SetInteraction,
+    UpsertFact,
+    UpsertIssue,
+)
 from Agents.domain.state_manager import DomainStateManager
 
 
@@ -110,6 +120,89 @@ class DomainStateManagerTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertIn("fact reference not found", result.errors[0])
+
+    def test_issue_requires_existing_rule_result_references(self):
+        issue = IssueCard(
+            title="赔偿金额",
+            rule_result_ids=[uuid4()],
+        )
+
+        result = self.manager.apply_patch(
+            self.case,
+            CasePatch(
+                producer="LegalAnalysisAgent",
+                base_version=0,
+                operations=[UpsertIssue(issue=issue)],
+            ),
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertIn("rule result reference not found", result.errors[0])
+
+    def test_fact_change_marks_dependent_rule_result_stale_and_blocks_reuse(self):
+        fact = FactItem(
+            fact_id="employment.monthly_wage",
+            value=10_000,
+            status=FactStatus.CONFIRMED,
+            source=FactSource(kind="user", ref_id="confirmation-1"),
+        )
+        self.case.state.facts.items[fact.fact_id] = fact
+        rule_result = RuleResult(
+            rule="wage_base",
+            input_case_version=0,
+            result={"result": {"monthly_wage": 10_000}},
+            fact_ids=[fact.fact_id],
+        )
+        added = self.manager.apply_patch(
+            self.case,
+            CasePatch(
+                producer="RuleCalculator",
+                base_version=0,
+                operations=[AddRuleResult(rule_result=rule_result)],
+            ),
+        )
+        self.assertTrue(added.accepted)
+
+        changed = self.manager.apply_patch(
+            self.case,
+            CasePatch(
+                producer="User",
+                base_version=1,
+                operations=[
+                    UpsertFact(
+                        fact=FactItem(
+                            fact_id=fact.fact_id,
+                            value=12_000,
+                            status=FactStatus.CONFIRMED,
+                            source=FactSource(kind="user", ref_id="confirmation-2"),
+                        )
+                    )
+                ],
+            ),
+        )
+        self.assertTrue(changed.accepted)
+        self.assertTrue(
+            self.case.state.analysis.rule_results[rule_result.result_id].stale
+        )
+
+        reused = self.manager.apply_patch(
+            self.case,
+            CasePatch(
+                producer="LegalAnalysisAgent",
+                base_version=2,
+                operations=[
+                    UpsertIssue(
+                        issue=IssueCard(
+                            title="赔偿金额",
+                            fact_ids=[fact.fact_id],
+                            rule_result_ids=[rule_result.result_id],
+                        )
+                    )
+                ],
+            ),
+        )
+        self.assertFalse(reused.accepted)
+        self.assertIn("stale rule result cannot support analysis", reused.errors[0])
 
     def test_user_confirmation_can_correct_agent_candidate_without_false_conflict(self):
         candidate = FactItem(

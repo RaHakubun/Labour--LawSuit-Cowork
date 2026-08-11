@@ -35,6 +35,7 @@ from Agents.services.tool_hub import AuthorityDocument, AuthorityToolResult, Too
 class CompleteController:
     async def decide(self, *, case_state, user_input):
         return RouteScenarioDecision(
+            decision_type="route_scenario",
             scene_id="termination_layoff",
             reason="解除争议事实已足以进入证据核验",
             current_goal="核验违法解除与赔偿请求",
@@ -80,6 +81,7 @@ class TraceableLegalProvider:
         fact_ids = [item["fact_id"] for item in context["facts"]["confirmed"]]
         evidence_ids = [item["evidence_id"] for item in context["evidence"]]
         authority_ids = [item["authority_id"] for item in context["authorities"]]
+        rule_result_ids = [item["result_id"] for item in context["rule_results"]]
         return LegalAnalysisResult(
             summary="现有材料支持形成方向性违法解除分析。",
             report_markdown="## 简要回复\n\n现有材料支持主张违法解除赔偿，但仍应核验原件。",
@@ -90,6 +92,7 @@ class TraceableLegalProvider:
                     fact_ids=fact_ids,
                     evidence_ids=evidence_ids,
                     authority_ids=authority_ids,
+                    rule_result_ids=rule_result_ids,
                 )
             ],
         )
@@ -107,7 +110,7 @@ class TraceableLegalProvider:
             fact_ids=issue["fact_ids"],
             evidence_ids=issue["evidence_ids"],
             authority_ids=issue["authority_ids"],
-            rule_result_ids=[item["result_id"] for item in context["rule_results"]],
+            rule_result_ids=issue["rule_result_ids"],
         )
 
 
@@ -223,8 +226,10 @@ class CaseWorkflowM5M6Tests(unittest.IsolatedAsyncioTestCase):
         artifacts = completed.state.outputs.artifacts
         self.assertEqual({item.artifact_type for item in artifacts.values()}, {"legal_analysis_report", "labour_arbitration_application"})
         application = next(item for item in artifacts.values() if item.artifact_type == "labour_arbitration_application")
+        report = next(item for item in artifacts.values() if item.artifact_type == "legal_analysis_report")
         self.assertIn("仲裁请求", application.revisions[0].content)
         self.assertEqual(len(application.revisions[0].rule_result_ids), 1)
+        self.assertEqual(len(report.revisions[0].rule_result_ids), 1)
 
         await self._submit(
             case,

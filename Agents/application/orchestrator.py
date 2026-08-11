@@ -64,22 +64,38 @@ class CaseOrchestrator:
         payload = command.payload
         if isinstance(payload, ConfirmFactPayload):
             return RequestFactConfirmationDecision(
+                decision_type="request_fact_confirmation",
                 fact_ids=[payload.fact_id],
                 reason="用户提交了显式事实确认命令",
             )
         if isinstance(payload, RequestAnalysisPayload):
-            return RequestAnalysisDecision(reason="用户显式请求法律分析")
+            return RequestAnalysisDecision(
+                decision_type="request_analysis",
+                reason="用户显式请求法律分析",
+            )
         if isinstance(payload, RequestDocumentPayload):
             return RequestDocumentDecision(
+                decision_type="request_document",
                 document_type=payload.document_type,
                 reason="用户显式请求生成文书",
             )
-        if isinstance(
-            payload,
-            (CalculateRulePayload, RegisterEvidencePayload, CancelOperationPayload),
-        ):
+        if isinstance(payload, CalculateRulePayload):
             return ContinueCurrentStageDecision(
-                reason=f"继续执行显式能力：{payload.command_type}"
+                decision_type="continue_current_stage",
+                continuation_type="calculate_rule",
+                reason=f"继续执行显式能力：{payload.command_type}",
+            )
+        if isinstance(payload, RegisterEvidencePayload):
+            return ContinueCurrentStageDecision(
+                decision_type="continue_current_stage",
+                continuation_type="register_evidence",
+                reason=f"继续执行显式能力：{payload.command_type}",
+            )
+        if isinstance(payload, CancelOperationPayload):
+            return ContinueCurrentStageDecision(
+                decision_type="continue_current_stage",
+                continuation_type="cancel_operation",
+                reason=f"继续执行显式能力：{payload.command_type}",
             )
         raise ValueError(
             f"submit_user_message requires a Controller provider decision: {command.command_id}"

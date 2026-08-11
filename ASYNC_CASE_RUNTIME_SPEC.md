@@ -155,6 +155,10 @@ SSE 客户端只是事件订阅者。客户端断开时，只取消该订阅，�
 
 ## 7. 调度语义与 Agent 边界
 
+用户只与 ControllerAgent 交谈。其余专业 Agent 不是同时在线的对话线程，而是由 `CaseOrchestrator` 在单条案件命令中按需调用的 typed provider；它们的输出先经过 Schema、权限和引用校验，再由 committed event 以 Controller 身份呈现。Controller 运行时只能看到本轮用户输入和 `CaseState v2` 快照，看不到源代码、架构文档或其他 Agent 的隐含思考。
+
+提示词采用三层契约：`Prompt_Template/ControllerAgent.md` 定义唯一对话入口和六类决策语义；`Prompt_Template/ScenarioAgentBase.md` 定义所有场景共享的非对话边界，各 `ScenarioAgents/*.md` 只定义场景业务知识；`Prompt_Template/LegalAnalysisAgent.md` 定义受控上下文和引用纪律。准确的输出 JSON Schema 在运行时直接由当前 Pydantic 模型生成并附加，避免模板手写 Schema 与代码漂移。稳定模板与机器契约放入 `system` message，用户原文、CaseState 和证据正文只作为独立 JSON `user` 数据载荷，禁止链式占位符替换。模板不得保留 `askmore`、Scenario 直接追问、Agent 自行调用工具或工具失败后补结论等旧协议。
+
 ### 7.1 ControllerAgent
 
 Controller 每次处理前读取 `CaseSnapshot`，输出 typed `ControllerDecision`，其决策仅允许为 `ask_clarification`、`route_scenario`、`request_fact_confirmation`、`request_analysis`、`request_document` 或 `continue_current_stage`。Controller 是整个执行链的高层调度者：`route_scenario` 等决策通过状态迁移校验后立即调用对应 Handler，并在同一条案件命令中继续执行，不等待用户批准内部 Agent 路由；专业 Handler 完成后把结构化结果交回运行时和 StateManager，后续是否继续推进仍由 Controller 语义控制。现有“三轮追问后合成一个默认 dispute_arbitration 分析包”的逻辑必须删除，因为它会在信息不足时伪造业务路由。达到追问上限时，应输出 `clarification.requested` 并允许用户选择“基于现有信息继续（明确低置信度范围）”或补充信息；若路由所需字段仍缺失，命令以 blocked 状态结束。
@@ -167,9 +171,9 @@ Scenario 接收场景 ID、允许读取的 CaseSnapshot 和明确任务，输出
 
 ### 7.3 LegalAnalysisAgent
 
-LegalAnalysis 的输入只能由 `LegalAnalysisContextBuilder` 从状态中构造，包含 confirmed/user_claimed/inferred/disputed 的明确分区、EvidenceRef、AuthorityRef、RuleResult、争议焦点和输出类型。输出为 typed `LegalAnalysisResult` 或 `DocumentDraftResult`，每个 issue/conclusion 必须声明所依据的 `fact_ids`、`evidence_ids` 和 `authority_ids`。引用不存在、引用状态不允许或权威资料解析失败时，ValidationGate 拒绝 patch。
+LegalAnalysis 的输入只能由 `LegalAnalysisContextBuilder` 从状态中构造，包含 `claimed`、`confirmed`、`inferred`、`disputed` 事实分区、EvidenceRef、AuthorityRef、RuleResult、争议焦点和输出类型。输出为 typed `LegalAnalysisResult` 或 `DocumentDraftResult`，每个 issue/conclusion 必须声明所依据的 `fact_ids`、`evidence_ids`、`authority_ids` 和实际使用的 `rule_result_ids`。引用不存在、引用状态不允许或权威资料解析失败时，ValidationGate 拒绝 patch。
 
-LegalAnalysis 可以提出待确认事项，但不能通过自然语言偷偷改变事实。报告生成后以 `OutputArtifact` 新版本写入；案件事实版本变化时，系统计算受影响引用并把旧报告标记为 `stale`，由用户显式请求重新生成。
+LegalAnalysis 不能通过自然语言改变事实，也不能绕过 Controller 创建 pending action；若受控上下文仍有缺口，只能在产物中明确标注待确认或待填写，不得推测补齐。仍处于 `registered`/`parsing` 的证据会阻塞分析，`failed` 证据不进入 Legal context。报告生成后以 `OutputArtifact` 新版本写入；案件事实版本变化时，系统计算受影响引用，把依赖该事实的规则结果与旧报告标记为 `stale`，并从 Legal context 排除 stale 规则结果，直到重新计算或重新生成。
 
 ### 7.4 ToolHub、EvidenceParser 与 RuleCalculator
 

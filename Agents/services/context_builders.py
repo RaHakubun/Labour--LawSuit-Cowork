@@ -60,6 +60,7 @@ class LegalAnalysisContextBuilder:
             "rule_results": [
                 item.model_dump(mode="json")
                 for item in aggregate.state.analysis.rule_results.values()
+                if not item.stale
             ],
             "existing_issues": [
                 item.model_dump(mode="json")
@@ -82,5 +83,15 @@ class LegalAnalysisContextBuilder:
             raise ValueError("legal analysis requires at least one usable fact")
         if unresolved:
             raise ValueError("legal analysis blocked by unresolved fact conflicts")
+        processing_evidence = [
+            str(item.evidence_id)
+            for item in aggregate.state.evidence.items.values()
+            if item.status in {EvidenceStatus.REGISTERED, EvidenceStatus.PARSING}
+        ]
+        if processing_evidence:
+            raise ValueError(
+                "legal analysis blocked by evidence still processing: "
+                + ", ".join(processing_evidence)
+            )
         if not aggregate.state.analysis.authorities:
             raise ValueError("legal analysis requires at least one parsed authority")

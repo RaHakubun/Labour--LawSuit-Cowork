@@ -30,6 +30,7 @@ class TerminationDecisionProvider:
     async def decide(self, *, case_state, user_input):
         if "工资" not in user_input or "解除时间" not in user_input:
             return AskClarificationDecision(
+                decision_type="ask_clarification",
                 question="请补充解除时间、月工资及是否收到书面解除通知。",
                 required_fact_ids=[
                     "termination.date",
@@ -38,6 +39,7 @@ class TerminationDecisionProvider:
                 ],
             )
         return RouteScenarioDecision(
+            decision_type="route_scenario",
             scene_id="termination_layoff",
             reason="解除时间、工资与通知形式已具备，可进入解除场景核验证据。",
             current_goal="判断解除程序与赔偿请求",
@@ -55,6 +57,7 @@ class BlockingDecisionProvider:
             self.both_started.set()
         await asyncio.wait_for(self.both_started.wait(), timeout=1)
         return AskClarificationDecision(
+            decision_type="ask_clarification",
             question="请补充书面解除通知。",
             required_fact_ids=["termination.written_notice"],
         )

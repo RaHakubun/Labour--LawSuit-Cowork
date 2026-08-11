@@ -5,6 +5,7 @@ from typing import Literal, Protocol
 from pydantic import Field, model_validator
 
 from Agents.domain.case_state import CaseState, StrictModel
+from Agents.scene_catalog import SceneId
 
 
 class CandidateFact(StrictModel):
@@ -45,7 +46,7 @@ class RuleCalculationRequest(StrictModel):
 
 
 class ScenarioResult(StrictModel):
-    scene_id: str = Field(min_length=1)
+    scene_id: SceneId
     confidence: float = Field(ge=0, le=1)
     candidate_facts: list[CandidateFact] = Field(default_factory=list)
     missing_fact_questions: list[str] = Field(default_factory=list)

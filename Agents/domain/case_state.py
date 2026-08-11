@@ -181,6 +181,7 @@ class IssueCard(StrictModel):
     fact_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[UUID] = Field(default_factory=list)
     authority_ids: list[UUID] = Field(default_factory=list)
+    rule_result_ids: list[UUID] = Field(default_factory=list)
 
 
 class RuleResult(StrictModel):
@@ -192,6 +193,7 @@ class RuleResult(StrictModel):
     unit: str = ""
     rounding: str = ""
     fact_ids: list[str] = Field(default_factory=list)
+    stale: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
 

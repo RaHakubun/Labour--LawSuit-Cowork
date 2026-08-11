@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
-from Agents.application.decisions import ControllerDecision
+from Agents.application.decisions import ContinueCurrentStageDecision, ControllerDecision
 from Agents.application.orchestrator import CaseOrchestrator
 from Agents.domain.case_state import (
     ArtifactRevision,
@@ -85,6 +85,7 @@ class ArchitectureBatchOneTests(unittest.TestCase):
             },
             {
                 "decision_type": "continue_current_stage",
+                "continuation_type": "active_scenario",
                 "reason": "继续完成既定规则计算",
             },
         ]
@@ -213,6 +214,9 @@ class ArchitectureBatchOneTests(unittest.TestCase):
                 "request_document",
             ],
         )
+        continuation = decisions[1]
+        self.assertIsInstance(continuation, ContinueCurrentStageDecision)
+        self.assertEqual(continuation.continuation_type, "calculate_rule")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -139,6 +140,23 @@ class DomainStateManager:
                 operation.issue.evidence_ids,
                 operation.issue.authority_ids,
             )
+            yield from self._validate_rule_result_references(
+                aggregate,
+                operation.issue.rule_result_ids,
+            )
+        elif isinstance(operation, AddRuleResult):
+            yield from self._validate_references(
+                aggregate,
+                operation.rule_result.fact_ids,
+                (),
+                (),
+            )
+            if operation.rule_result.input_case_version != aggregate.version:
+                yield (
+                    "rule result input_case_version="
+                    f"{operation.rule_result.input_case_version} does not match "
+                    f"case version={aggregate.version}"
+                )
         elif isinstance(operation, AddArtifactRevision):
             for revision in operation.artifact.revisions:
                 yield from self._validate_references(
@@ -152,9 +170,22 @@ class DomainStateManager:
                         f"artifact revision case_version={revision.case_version} does not "
                         f"match case version={aggregate.version}"
                     )
-                for result_id in revision.rule_result_ids:
-                    if result_id not in aggregate.state.analysis.rule_results:
-                        yield f"rule result reference not found: {result_id}"
+                yield from self._validate_rule_result_references(
+                    aggregate,
+                    revision.rule_result_ids,
+                )
+
+    def _validate_rule_result_references(
+        self,
+        aggregate: CaseAggregate,
+        result_ids: Iterable[UUID],
+    ) -> Iterable[str]:
+        for result_id in result_ids:
+            result = aggregate.state.analysis.rule_results.get(result_id)
+            if result is None:
+                yield f"rule result reference not found: {result_id}"
+            elif result.stale:
+                yield f"stale rule result cannot support analysis: {result_id}"
 
     def _validate_references(
         self,
@@ -325,6 +356,9 @@ class DomainStateManager:
     ) -> None:
         changed_facts = fact_ids or set()
         changed_evidence = evidence_ids or set()
+        for result in state.analysis.rule_results.values():
+            if changed_facts.intersection(result.fact_ids):
+                result.stale = True
         for artifact in state.outputs.artifacts.values():
             revision = artifact.revisions[-1]
             if changed_facts.intersection(revision.fact_ids) or changed_evidence.intersection(

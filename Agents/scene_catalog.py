@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast, get_args
 
 
-SCENE_IDS: tuple[str, ...] = (
+SceneId = Literal[
     "recruitment_probation",
     "adjustment_transfer",
     "performance_discipline",
@@ -15,7 +16,9 @@ SCENE_IDS: tuple[str, ...] = (
     "termination_layoff",
     "noncompete_confidentiality",
     "dispute_arbitration",
-)
+]
+
+SCENE_IDS: tuple[SceneId, ...] = cast(tuple[SceneId, ...], get_args(SceneId))
 
 ROLE_IDS: tuple[str, ...] = ("worker", "employer", "lawyer")
 
@@ -74,12 +77,12 @@ class SceneCatalogSummary:
     module_count: int
 
 
-def validate_scene_id(scene_id: str) -> str:
+def validate_scene_id(scene_id: str) -> SceneId:
     normalized = str(scene_id).strip()
     if normalized not in SCENE_TEMPLATE_FILENAMES:
         allowed = ", ".join(SCENE_IDS)
         raise ValueError(f"invalid scene_id: {scene_id}. allowed: {allowed}")
-    return normalized
+    return cast(SceneId, normalized)
 
 
 def validate_role_id(role_id: str) -> str:

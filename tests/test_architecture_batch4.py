@@ -15,6 +15,7 @@ from Agents.services.tool_hub import AuthorityToolResult, ToolHub
 class ControllerProvider:
     async def decide(self, *, case_state, user_input):
         return AskClarificationDecision(
+            decision_type="ask_clarification",
             question="请补充解除日期。",
             required_fact_ids=["termination.date"],
         )

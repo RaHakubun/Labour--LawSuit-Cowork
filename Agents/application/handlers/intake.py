@@ -224,9 +224,15 @@ class ControllerCommandHandler:
             return
 
         if isinstance(decision, ContinueCurrentStageDecision):
-            scene_id = aggregate.state.interaction.active_scene_id
-            if not scene_id:
+            if decision.continuation_type != "active_scenario":
+                raise ValueError(
+                    "Controller provider may only continue an active scenario; "
+                    f"typed capability required for {decision.continuation_type}"
+                )
+            active_scene_id = aggregate.state.interaction.active_scene_id
+            if not active_scene_id:
                 raise ValueError("cannot continue current stage without an active scene")
+            scene_id = validate_scene_id(active_scene_id)
             async for batch in self._scenario_handler.execute_stage(
                 command,
                 aggregate,

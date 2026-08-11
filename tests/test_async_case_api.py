@@ -13,6 +13,7 @@ from Agents.services.tool_hub import AuthorityToolResult, ToolHub
 class TerminationController:
     async def decide(self, *, case_state, user_input):
         return AskClarificationDecision(
+            decision_type="ask_clarification",
             question="请补充解除日期、月工资及书面解除通知。",
             required_fact_ids=[
                 "termination.date",
