@@ -22,6 +22,15 @@ class RuleCalculationCommandHandler:
         payload = command.payload
         if not isinstance(payload, CalculateRulePayload):
             raise TypeError("rule handler received an invalid payload")
+        async for batch in self.execute_payload(command, aggregate, payload):
+            yield batch
+
+    async def execute_payload(
+        self,
+        command: CaseCommand,
+        aggregate: CaseAggregate,
+        payload: CalculateRulePayload,
+    ) -> AsyncIterator[ExecutionBatch]:
         missing = [fact_id for fact_id in payload.fact_ids if fact_id not in aggregate.state.facts.items]
         if missing:
             raise ValueError(f"rule input facts not found: {', '.join(missing)}")

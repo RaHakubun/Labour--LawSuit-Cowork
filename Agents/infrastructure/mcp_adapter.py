@@ -13,7 +13,7 @@ from Agents.services.tool_hub import (
     AuthorityToolResult,
     ToolExecutionError,
 )
-from utils.pkulaw_mcp_client import call_service_query, parse_mcp_result
+from utils.pkulaw_mcp_client import McpHttpError, call_service_query, parse_mcp_result
 
 
 class PkulawAuthoritySearchAdapter:
@@ -169,8 +169,9 @@ class PkulawAuthoritySearchAdapter:
             return exc.retryable
         if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError)):
             return True
-        message = str(exc).lower()
-        return any(token in message for token in ("429", "500", "502", "503", "504"))
+        if isinstance(exc, McpHttpError):
+            return exc.status_code == 429 or 500 <= exc.status_code <= 599
+        return False
 
     def _first(self, item: dict[str, Any], *keys: str) -> str:
         for key in keys:

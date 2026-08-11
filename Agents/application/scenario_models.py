@@ -33,8 +33,15 @@ class AuthorityRetrievalRequest(StrictModel):
 
 
 class RuleCalculationRequest(StrictModel):
-    rule_name: str = Field(min_length=1)
-    required_fact_ids: list[str] = Field(min_length=1)
+    calc_type: Literal[
+        "wage_base",
+        "overtime",
+        "severance",
+        "medical_period",
+        "annual_leave_unused",
+        "double_wage_unsigned_contract",
+    ]
+    input_fact_map: dict[str, str] = Field(min_length=1)
 
 
 class ScenarioResult(StrictModel):

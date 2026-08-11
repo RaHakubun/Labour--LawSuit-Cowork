@@ -125,7 +125,6 @@ class EvidenceItem(StrictModel):
     size: int = Field(ge=0)
     status: EvidenceStatus = EvidenceStatus.REGISTERED
     extracted_text_ref: str = ""
-    extracted_text: str = ""
     parser_name: str = ""
     parsed_at: datetime | None = None
     linked_fact_ids: list[str] = Field(default_factory=list)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Awaitable, Callable
 
 from Agents.application.legal_models import LegalResultProvider
 from Agents.domain.case_state import (
@@ -19,9 +20,14 @@ from .base import ExecutionBatch
 
 
 class LegalCommandHandler:
-    def __init__(self, provider: LegalResultProvider) -> None:
+    def __init__(
+        self,
+        provider: LegalResultProvider,
+        *,
+        text_reader: Callable[[str], Awaitable[str]],
+    ) -> None:
         self._provider = provider
-        self._context_builder = LegalAnalysisContextBuilder()
+        self._context_builder = LegalAnalysisContextBuilder(text_reader=text_reader)
 
     def supports(self, command_type: str) -> bool:
         return command_type in {"request_analysis", "request_document"}
@@ -64,7 +70,9 @@ class LegalCommandHandler:
             ),
             events=[EventDraft(event_type="agent.stage_started", producer="LegalAnalysisAgent", visibility="user", payload={"stage": "legal_analysis"})],
         )
-        result = await self._provider.analyze(context=self._context_builder.build(aggregate))
+        result = await self._provider.analyze(
+            context=await self._context_builder.build(aggregate)
+        )
         issues = [
             IssueCard(
                 title=item.title,
@@ -110,7 +118,7 @@ class LegalCommandHandler:
         if not aggregate.state.analysis.issues:
             raise ValueError("request analysis before generating a document")
         result = await self._provider.draft_document(
-            context=self._context_builder.build(aggregate),
+            context=await self._context_builder.build(aggregate),
             document_type=document_type,
         )
         artifact = self._artifact_revision(

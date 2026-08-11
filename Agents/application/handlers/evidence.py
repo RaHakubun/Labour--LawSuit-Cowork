@@ -7,6 +7,7 @@ from Agents.domain.commands import CaseCommand, RegisterEvidencePayload
 from Agents.domain.events import EventDraft
 from Agents.domain.patches import (
     CasePatch,
+    AddEvidenceExtraction,
     LinkEvidenceToFact,
     RegisterEvidence,
     UpdateEvidence,
@@ -75,9 +76,13 @@ class EvidenceCommandHandler:
             patch=CasePatch(
                 producer="EvidenceParser",
                 base_version=aggregate.version,
-                operations=[UpdateEvidence(evidence=parsed.evidence), *fact_operations],
+                operations=[
+                    UpdateEvidence(evidence=parsed.evidence),
+                    AddEvidenceExtraction(extraction=parsed.extraction),
+                    *fact_operations,
+                ],
             ),
-            events=[EventDraft(event_type="evidence.parsed", producer="EvidenceParser", visibility="user", payload={"evidence_id": str(evidence.evidence_id), "parser_name": parsed.evidence.parser_name, "candidate_fact_ids": [fact.fact_id for fact in parsed.candidate_facts], "text_length": len(parsed.evidence.extracted_text)})],
+            events=[EventDraft(event_type="evidence.parsed", producer="EvidenceParser", visibility="user", payload={"evidence_id": str(evidence.evidence_id), "extraction_id": str(parsed.extraction.extraction_id), "parser_name": parsed.evidence.parser_name, "candidate_fact_ids": [fact.fact_id for fact in parsed.candidate_facts], "text_length": parsed.extraction.character_count})],
         )
         if parsed.candidate_facts:
             yield ExecutionBatch(

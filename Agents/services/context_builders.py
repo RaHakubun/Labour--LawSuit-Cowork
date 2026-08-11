@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from Agents.domain.case_state import CaseAggregate, EvidenceStatus, FactStatus
@@ -8,7 +9,10 @@ from Agents.domain.case_state import CaseAggregate, EvidenceStatus, FactStatus
 class LegalAnalysisContextBuilder:
     """Builds the only state projection LegalAnalysisAgent is allowed to consume."""
 
-    def build(self, aggregate: CaseAggregate) -> dict[str, Any]:
+    def __init__(self, *, text_reader: Callable[[str], Awaitable[str]]) -> None:
+        self._text_reader = text_reader
+
+    async def build(self, aggregate: CaseAggregate) -> dict[str, Any]:
         facts = {
             status.value: [
                 item.model_dump(mode="json")
@@ -17,6 +21,30 @@ class LegalAnalysisContextBuilder:
             ]
             for status in FactStatus
         }
+        evidence_context: list[dict[str, Any]] = []
+        for item in aggregate.state.evidence.items.values():
+            if item.status is not EvidenceStatus.PARSED:
+                continue
+            extraction = next(
+                (
+                    candidate
+                    for candidate in aggregate.state.evidence.extractions.values()
+                    if candidate.evidence_id == item.evidence_id
+                ),
+                None,
+            )
+            if extraction is None:
+                raise ValueError(
+                    f"parsed evidence has no extraction metadata: {item.evidence_id}"
+                )
+            extracted_text = await self._text_reader(extraction.text_ref)
+            evidence_context.append(
+                {
+                    **item.model_dump(mode="json"),
+                    "extraction": extraction.model_dump(mode="json"),
+                    "extracted_text": extracted_text[:20_000],
+                }
+            )
         return {
             "case_id": str(aggregate.case_id),
             "case_version": aggregate.version,
@@ -24,14 +52,7 @@ class LegalAnalysisContextBuilder:
             "scene_id": aggregate.state.interaction.active_scene_id,
             "goal": aggregate.state.interaction.current_goal,
             "facts": facts,
-            "evidence": [
-                {
-                    **item.model_dump(mode="json", exclude={"extracted_text"}),
-                    "extracted_text": item.extracted_text[:20_000],
-                }
-                for item in aggregate.state.evidence.items.values()
-                if item.status is EvidenceStatus.PARSED
-            ],
+            "evidence": evidence_context,
             "authorities": [
                 item.model_dump(mode="json")
                 for item in aggregate.state.analysis.authorities.values()

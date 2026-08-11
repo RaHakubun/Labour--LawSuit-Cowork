@@ -9,6 +9,7 @@ from .case_state import (
     AuthorityRef,
     CaseStage,
     EvidenceItem,
+    EvidenceExtraction,
     FactItem,
     IssueCard,
     OutputArtifact,
@@ -54,6 +55,11 @@ class UpdateEvidence(StrictModel):
     evidence: EvidenceItem
 
 
+class AddEvidenceExtraction(StrictModel):
+    operation_type: Literal["add_evidence_extraction"] = "add_evidence_extraction"
+    extraction: EvidenceExtraction
+
+
 class LinkEvidenceToFact(StrictModel):
     operation_type: Literal["link_evidence_to_fact"] = "link_evidence_to_fact"
     evidence_id: UUID
@@ -86,6 +92,7 @@ CasePatchOperation = Annotated[
     | ResolveFactConflict
     | RegisterEvidence
     | UpdateEvidence
+    | AddEvidenceExtraction
     | LinkEvidenceToFact
     | UpsertIssue
     | AddAuthority

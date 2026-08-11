@@ -33,6 +33,7 @@ from Agents.infrastructure.uow import CaseUnitOfWork
 from Agents.runtime.registry import CaseRuntimeRegistry
 from Agents.services.tool_hub import ToolHub
 from Agents.services.evidence_parser import EvidenceParser
+from Agents.services.ocr import VisionOcrAdapter
 
 from .auth import BearerTokenAuthenticator
 
@@ -60,20 +61,32 @@ def create_async_case_app(
     unit_of_work: CaseUnitOfWork | None = None,
     allowed_origins: list[str] | None = None,
     shutdown_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
+    vision_ocr: VisionOcrAdapter | None = None,
 ) -> FastAPI:
     uow = unit_of_work or InMemoryCaseUnitOfWork()
     storage = evidence_storage or LocalEvidenceStorage(
         Path(tempfile.gettempdir()) / "labour-lawsuit-evidence"
     )
+    rule_handler = RuleCalculationCommandHandler()
     scenario_handler = ScenarioStageHandler(
         scenario_provider=scenario_provider,
         tool_hub=tool_hub,
+        rule_handler=rule_handler,
     )
-    legal_handler = LegalCommandHandler(legal_provider)
+    legal_handler = LegalCommandHandler(
+        legal_provider,
+        text_reader=storage.read_extracted_text,
+    )
     stage_handlers: list[CommandHandler] = [
-        EvidenceCommandHandler(EvidenceParser(storage.path_for)),
+        EvidenceCommandHandler(
+            EvidenceParser(
+                path_resolver=storage.path_for,
+                text_writer=storage.save_extracted_text,
+                vision_ocr=vision_ocr,
+            )
+        ),
         ConfirmFactCommandHandler(),
-        RuleCalculationCommandHandler(),
+        rule_handler,
         legal_handler,
     ]
     controller_handler = ControllerCommandHandler(
@@ -398,7 +411,7 @@ def _case_summary(aggregate) -> dict[str, Any]:
             for item in aggregate.state.analysis.authorities.values()
         ],
         "evidence": [
-            item.model_dump(mode="json", exclude={"extracted_text"})
+            item.model_dump(mode="json")
             for item in aggregate.state.evidence.items.values()
         ],
         "fact_conflicts": [

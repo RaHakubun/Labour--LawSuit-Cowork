@@ -22,6 +22,8 @@ from Agents.domain.patches import (
 )
 from Agents.scene_catalog import validate_scene_id
 from Agents.services.tool_hub import ToolExecutionError, ToolHub
+from Agents.services.scenario_rule_planner import ScenarioRulePlanner
+from Agents.application.handlers.rules import RuleCalculationCommandHandler
 
 from .base import ExecutionBatch
 
@@ -32,9 +34,12 @@ class ScenarioStageHandler:
         *,
         scenario_provider: ScenarioResultProvider,
         tool_hub: ToolHub,
+        rule_handler: RuleCalculationCommandHandler | None = None,
     ) -> None:
         self._scenario_provider = scenario_provider
         self._tool_hub = tool_hub
+        self._rule_handler = rule_handler
+        self._rule_planner = ScenarioRulePlanner()
 
     async def execute_stage(
         self,
@@ -202,3 +207,55 @@ class ScenarioStageHandler:
                     )
                 ],
             )
+
+        for request in result.rule_calculation_requests:
+            if self._rule_handler is None:
+                raise RuntimeError(
+                    "rule handler is required when Scenario requests a calculation"
+                )
+            plan = self._rule_planner.plan(request, aggregate)
+            blocked = [*plan.missing_fact_ids, *plan.unconfirmed_fact_ids]
+            if blocked:
+                questions = [
+                    PendingQuestion(
+                        text=f"规则计算前需要确认事实：{fact_id}",
+                        required_fact_ids=[fact_id],
+                    )
+                    for fact_id in blocked
+                ]
+                yield ExecutionBatch(
+                    patch=CasePatch(
+                        producer="ScenarioAgent",
+                        base_version=aggregate.version,
+                        operations=[
+                            SetInteraction(
+                                active_agent="ControllerAgent",
+                                pending_questions=questions,
+                                blocked_on=blocked,
+                            )
+                        ],
+                    ),
+                    events=[
+                        EventDraft(
+                            event_type="clarification.requested",
+                            producer="ControllerAgent",
+                            visibility="user",
+                            payload={
+                                "questions": [
+                                    item.model_dump(mode="json") for item in questions
+                                ],
+                                "reason": "rule_input_confirmation_required",
+                            },
+                        )
+                    ],
+                )
+                continue
+            if plan.payload is None:
+                raise RuntimeError("rule planner returned no payload without blockers")
+            internal_command = command.model_copy(update={"payload": plan.payload})
+            async for batch in self._rule_handler.execute_payload(
+                internal_command,
+                aggregate,
+                plan.payload,
+            ):
+                yield batch

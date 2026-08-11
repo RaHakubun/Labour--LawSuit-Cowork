@@ -27,6 +27,12 @@ ALLOWED_MCP_SERVICE_NAMES = {
 }
 
 
+class McpHttpError(RuntimeError):
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class PkulawMcpClient:
     def __init__(
         self,
@@ -77,7 +83,8 @@ class PkulawMcpClient:
         if response.status_code != 200:
             hint = _STATUS_HINTS.get(response.status_code)
             suffix = f" ({hint})" if hint else ""
-            raise RuntimeError(
+            raise McpHttpError(
+                response.status_code,
                 f"mcp request failed: {response.status_code} {response.text}{suffix}"
             )
         try:
@@ -363,7 +370,8 @@ def mcp_query(
     allowed_service_names: set[str] | None = None,
 ) -> str:
     validate_mcp_service_name(service_name, allowed_service_names=allowed_service_names)
-    resolved_token = (token or os.getenv("PKULAW_MCP_TOKEN", "")).strip()
+    configured_token = token if token is not None else os.getenv("PKULAW_MCP_TOKEN")
+    resolved_token = configured_token.strip() if configured_token else ""
     if not resolved_token:
         raise RuntimeError("PKULAW_MCP_TOKEN is required")
     result = call_service_query(

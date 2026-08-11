@@ -12,6 +12,7 @@ from Agents.infrastructure.llm_adapter import AsyncOpenAILegalResultProvider
 from Agents.infrastructure.evidence_storage import LocalEvidenceStorage
 from Agents.infrastructure.mcp_adapter import PkulawAuthoritySearchAdapter
 from Agents.infrastructure.postgres_uow import PostgresCaseUnitOfWork
+from Agents.infrastructure.vision_ocr_adapter import OpenAIVisionOcrAdapter
 from Agents.scene_catalog import validate_template_catalog
 from Agents.services.tool_hub import ToolHub
 
@@ -24,6 +25,7 @@ def build_app():
     legal_provider = AsyncOpenAILegalResultProvider()
     validate_template_catalog(Path(__file__).resolve().parents[1])
     tool_hub = ToolHub(PkulawAuthoritySearchAdapter())
+    vision_ocr = OpenAIVisionOcrAdapter()
     authenticator = BearerTokenAuthenticator.from_environment()
     engine = create_engine()
     unit_of_work = PostgresCaseUnitOfWork(create_session_factory(engine))
@@ -43,6 +45,7 @@ def build_app():
         unit_of_work=unit_of_work,
         allowed_origins=origins or None,
         shutdown_callbacks=[engine.dispose],
+        vision_ocr=vision_ocr,
     )
 
 

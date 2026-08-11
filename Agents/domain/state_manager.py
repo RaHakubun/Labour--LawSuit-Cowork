@@ -8,12 +8,14 @@ from .case_state import (
     CaseAggregate,
     CaseState,
     FactConflict,
+    FactEvidenceLink,
     FactStatus,
     utc_now,
 )
 from .patches import (
     AddArtifactRevision,
     AddAuthority,
+    AddEvidenceExtraction,
     AddRuleResult,
     CasePatch,
     CasePatchOperation,
@@ -32,7 +34,13 @@ from .transitions import validate_transition
 PRODUCER_OPERATIONS: dict[str, set[type[CasePatchOperation]]] = {
     "ControllerAgent": {SetInteraction, UpsertFact},
     "ScenarioAgent": {SetInteraction, UpsertFact, AddAuthority},
-    "EvidenceParser": {RegisterEvidence, UpdateEvidence, LinkEvidenceToFact, UpsertFact},
+    "EvidenceParser": {
+        RegisterEvidence,
+        UpdateEvidence,
+        AddEvidenceExtraction,
+        LinkEvidenceToFact,
+        UpsertFact,
+    },
     "RuleCalculator": {AddRuleResult},
     "LegalAnalysisAgent": {SetInteraction, UpsertIssue, AddArtifactRevision},
     "StateManager": {SetInteraction, ResolveFactConflict},
@@ -121,6 +129,9 @@ class DomainStateManager:
         elif isinstance(operation, UpdateEvidence):
             if operation.evidence.evidence_id not in aggregate.state.evidence.items:
                 yield f"evidence not found: {operation.evidence.evidence_id}"
+        elif isinstance(operation, AddEvidenceExtraction):
+            if operation.extraction.evidence_id not in aggregate.state.evidence.items:
+                yield f"evidence not found: {operation.extraction.evidence_id}"
         elif isinstance(operation, UpsertIssue):
             yield from self._validate_references(
                 aggregate,
@@ -242,10 +253,34 @@ class DomainStateManager:
             )
             return
 
+        if isinstance(operation, AddEvidenceExtraction):
+            extraction = operation.extraction
+            if extraction.extraction_id in state.evidence.extractions:
+                raise ValueError(
+                    f"evidence extraction already exists: {extraction.extraction_id}"
+                )
+            state.evidence.extractions[extraction.extraction_id] = extraction
+            return
+
         if isinstance(operation, LinkEvidenceToFact):
             evidence = state.evidence.items[operation.evidence_id]
             if operation.fact_id not in evidence.linked_fact_ids:
                 evidence.linked_fact_ids.append(operation.fact_id)
+            existing_link = next(
+                (
+                    item
+                    for item in state.evidence.fact_links.values()
+                    if item.evidence_id == operation.evidence_id
+                    and item.fact_id == operation.fact_id
+                ),
+                None,
+            )
+            if existing_link is None:
+                link = FactEvidenceLink(
+                    evidence_id=operation.evidence_id,
+                    fact_id=operation.fact_id,
+                )
+                state.evidence.fact_links[link.link_id] = link
             return
 
         if isinstance(operation, UpsertIssue):

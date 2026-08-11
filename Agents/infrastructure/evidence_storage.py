@@ -9,11 +9,15 @@ from uuid import UUID, uuid4
 
 
 ALLOWED_MEDIA_TYPES = {
-    "text/plain": ".txt",
-    "text/csv": ".csv",
-    "application/json": ".json",
-    "application/pdf": ".pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "text/plain": (".txt",),
+    "text/csv": (".csv",),
+    "application/json": (".json",),
+    "application/pdf": (".pdf",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ".docx",
+    ),
+    "image/png": (".png",),
+    "image/jpeg": (".jpg", ".jpeg"),
 }
 
 
@@ -38,9 +42,10 @@ class LocalEvidenceStorage:
         normalized_type = media_type.split(";", 1)[0].strip().lower()
         if normalized_type not in ALLOWED_MEDIA_TYPES:
             raise ValueError(f"unsupported evidence media type: {normalized_type}")
-        expected_suffix = ALLOWED_MEDIA_TYPES[normalized_type]
+        expected_suffixes = ALLOWED_MEDIA_TYPES[normalized_type]
+        expected_suffix = expected_suffixes[0]
         supplied_suffix = Path(display_name).suffix.lower()
-        if supplied_suffix and supplied_suffix != expected_suffix:
+        if supplied_suffix and supplied_suffix not in expected_suffixes:
             raise ValueError(
                 f"evidence extension {supplied_suffix} does not match media type "
                 f"{normalized_type}"
@@ -69,12 +74,38 @@ class LocalEvidenceStorage:
         )
 
     def path_for(self, storage_key: str) -> Path:
-        if not re.fullmatch(r"[0-9a-f]{32}\.(txt|csv|json|pdf|docx)", storage_key):
+        if not re.fullmatch(
+            r"[0-9a-f]{32}\.(txt|csv|json|pdf|docx|png|jpg)",
+            storage_key,
+        ):
             raise ValueError("invalid evidence storage key")
         target = (self.root / storage_key).resolve()
         if target.parent != self.root:
             raise ValueError("evidence storage key escapes root")
         return target
+
+    async def save_extracted_text(self, evidence_id: UUID, text: str) -> str:
+        normalized = text.strip()
+        if not normalized:
+            raise ValueError("extracted evidence text is empty")
+        extraction_root = (self.root / "extracted").resolve()
+        extraction_root.mkdir(parents=True, exist_ok=True)
+        target = (extraction_root / f"{evidence_id.hex}.txt").resolve()
+        if target.parent != extraction_root:
+            raise ValueError("extracted text path escapes storage root")
+        await asyncio.to_thread(target.write_text, normalized, encoding="utf-8")
+        return f"evidence-text://{evidence_id}"
+
+    async def read_extracted_text(self, text_ref: str) -> str:
+        match = re.fullmatch(r"evidence-text://([0-9a-f-]{36})", text_ref)
+        if match is None:
+            raise ValueError("invalid extracted text reference")
+        evidence_id = UUID(match.group(1))
+        extraction_root = (self.root / "extracted").resolve()
+        target = (extraction_root / f"{evidence_id.hex}.txt").resolve()
+        if target.parent != extraction_root or not target.is_file():
+            raise FileNotFoundError(f"extracted text not found: {text_ref}")
+        return await asyncio.to_thread(target.read_text, encoding="utf-8")
 
     async def delete(self, storage_key: str) -> None:
         target = self.path_for(storage_key)

@@ -124,10 +124,18 @@ class CaseWorkflowM5M6Tests(unittest.IsolatedAsyncioTestCase):
             unit_of_work=self.uow,
             handlers=[
                 ControllerCommandHandler(CompleteController(), scenario),
-                EvidenceCommandHandler(EvidenceParser(self.storage.path_for)),
+                EvidenceCommandHandler(
+                    EvidenceParser(
+                        path_resolver=self.storage.path_for,
+                        text_writer=self.storage.save_extracted_text,
+                    )
+                ),
                 ConfirmFactCommandHandler(),
                 RuleCalculationCommandHandler(),
-                LegalCommandHandler(TraceableLegalProvider()),
+                LegalCommandHandler(
+                    TraceableLegalProvider(),
+                    text_reader=self.storage.read_extracted_text,
+                ),
             ],
         )
         self.service = CaseCommandService(

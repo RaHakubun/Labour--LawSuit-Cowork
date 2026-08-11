@@ -21,6 +21,13 @@ def _migrate_v1_to_v2(snapshot: dict[str, Any]) -> dict[str, Any]:
     interaction = migrated.setdefault("state", {}).setdefault("interaction", {})
     interaction.setdefault("pending_confirmation", None)
     evidence = migrated["state"].setdefault("evidence", {})
+    for item in evidence.get("items", {}).values():
+        legacy_text = str(item.pop("extracted_text", ""))
+        if legacy_text:
+            raise ValueError(
+                "schema 1.0 snapshot contains inline evidence text; run the explicit "
+                "evidence text extraction migration before loading it"
+            )
     evidence.setdefault("extractions", {})
     evidence.setdefault("fact_links", {})
     analysis = migrated["state"].setdefault("analysis", {})

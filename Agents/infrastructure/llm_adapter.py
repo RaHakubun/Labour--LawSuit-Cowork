@@ -172,8 +172,9 @@ class AsyncOpenAIScenarioResultProvider:
             '"required":true}],'
             '"retrieval_plan":[{"tool_name":"检索法律法规-语义",'
             '"query":"针对本案事实的完整查询","purpose":"...","required":true}],'
-            '"rule_calculation_requests":[{"rule_name":"...",'
-            '"required_fact_ids":["..."]}],"summary":"场景处理摘要"}。'
+            '"rule_calculation_requests":[{"calc_type":"wage_base",'
+            '"input_fact_map":{"monthly_wage":"employment.monthly_wage"}}],'
+            '"summary":"场景处理摘要"}。'
             "不得在检索完成前生成法律结论或法条内容；没有来源时不得伪造引用。"
         )
         prompt = (
