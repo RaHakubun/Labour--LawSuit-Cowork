@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -49,6 +50,11 @@ class CaseCommandRow(Base):
     __table_args__ = (
         UniqueConstraint("case_id", "idempotency_key", name="uq_case_command_idempotency"),
         Index("ix_case_commands_status_created", "status", "created_at"),
+        Index("ix_case_commands_case_status", "case_id", "status"),
+        CheckConstraint(
+            "status IN ('accepted', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_case_commands_status",
+        ),
     )
 
     command_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)

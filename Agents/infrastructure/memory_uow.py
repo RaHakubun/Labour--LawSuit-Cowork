@@ -9,6 +9,7 @@ from Agents.domain.case_state import CaseAggregate
 from Agents.domain.commands import CaseCommand
 from Agents.domain.commands import CancelOperationPayload
 from Agents.domain.events import EventDraft, EventEnvelope
+from Agents.domain.errors import PatchRejectedError, error_payload
 from Agents.domain.state_manager import DomainStateManager
 from Agents.infrastructure.uow import AcceptCommandResult
 
@@ -82,6 +83,76 @@ class InMemoryCaseUnitOfWork:
             )
             return AcceptCommandResult(command, True, [event])
 
+    async def reject_command(
+        self,
+        command: CaseCommand,
+        error: Exception,
+    ) -> EventEnvelope:
+        data = self._require(command.case_id)
+        async with data.lock:
+            return self._append_event(
+                data,
+                command,
+                EventDraft(
+                    event_type="command.rejected",
+                    producer="CaseRuntime",
+                    visibility="user",
+                    payload=error_payload(error),
+                ),
+            )
+
+    async def find_command(
+        self,
+        case_id: UUID,
+        idempotency_key: str,
+    ) -> AcceptCommandResult | None:
+        data = self._require(case_id)
+        async with data.lock:
+            command = data.commands_by_key.get(idempotency_key)
+            if command is None:
+                return None
+            events = [item for item in data.events if item.command_id == command.command_id]
+            return AcceptCommandResult(command, False, events)
+
+    async def start_command(self, command: CaseCommand) -> EventEnvelope:
+        data = self._require(command.case_id)
+        async with data.lock:
+            status = data.command_status.get(command.command_id)
+            if status == "running":
+                return self._terminal_or_event(data, command.command_id, "operation.started")
+            if status != "accepted":
+                raise ValueError(f"command cannot start from status={status}")
+            data.command_status[command.command_id] = "running"
+            return self._append_event(
+                data,
+                command,
+                EventDraft(
+                    event_type="operation.started",
+                    producer="CaseRuntime",
+                    visibility="user",
+                    payload={"status": "running"},
+                ),
+            )
+
+    async def list_recoverable_commands(self) -> list[CaseCommand]:
+        return await self._commands_with_status("accepted")
+
+    async def list_interrupted_commands(self) -> list[CaseCommand]:
+        return await self._commands_with_status("running")
+
+    async def _commands_with_status(self, status: str) -> list[CaseCommand]:
+        commands: list[CaseCommand] = []
+        async with self._registry_lock:
+            data_items = list(self._cases.values())
+        for data in data_items:
+            async with data.lock:
+                commands.extend(
+                    command
+                    for command in data.commands_by_key.values()
+                    if data.command_status.get(command.command_id) == status
+                )
+        return sorted(commands, key=lambda item: item.created_at)
+
     async def commit_batch(
         self,
         command: CaseCommand,
@@ -91,11 +162,6 @@ class InMemoryCaseUnitOfWork:
         async with data.lock:
             committed: list[EventEnvelope] = []
             if batch.patch is not None:
-                candidate = data.aggregate.model_copy(deep=True)
-                result = self._state_manager.apply_patch(candidate, batch.patch)
-                if not result.accepted:
-                    raise ValueError("; ".join(result.errors))
-                data.aggregate = candidate
                 committed.append(
                     self._append_event(
                         data,
@@ -108,6 +174,26 @@ class InMemoryCaseUnitOfWork:
                         ),
                     )
                 )
+                candidate = data.aggregate.model_copy(deep=True)
+                result = self._state_manager.apply_patch(candidate, batch.patch)
+                if not result.accepted:
+                    committed.append(
+                        self._append_event(
+                            data,
+                            command,
+                            EventDraft(
+                                event_type="patch.rejected",
+                                producer="StateManager",
+                                visibility="user",
+                                payload={
+                                    "patch_id": str(batch.patch.patch_id),
+                                    "errors": result.errors,
+                                },
+                            ),
+                        )
+                    )
+                    raise PatchRejectedError(result.errors, committed)
+                data.aggregate = candidate
                 committed.append(
                     self._append_event(
                         data,
@@ -137,6 +223,17 @@ class InMemoryCaseUnitOfWork:
     ) -> EventEnvelope:
         data = self._require(command.case_id)
         async with data.lock:
+            current = data.command_status.get(command.command_id)
+            if current in {"completed", "failed", "cancelled"}:
+                return self._terminal_or_event(
+                    data,
+                    command.command_id,
+                    {
+                        "completed": "operation.completed",
+                        "failed": "operation.failed",
+                        "cancelled": "operation.cancelled",
+                    }[current],
+                )
             status = "cancelled" if cancelled else "failed" if error else "completed"
             data.command_status[command.command_id] = status
             event_type = (
@@ -147,11 +244,7 @@ class InMemoryCaseUnitOfWork:
                 else "operation.completed"
             )
             payload = (
-                {
-                    "code": type(error).__name__,
-                    "message": str(error),
-                    "retryable": False,
-                }
+                error_payload(error)
                 if error
                 else {"status": status}
             )
@@ -165,6 +258,19 @@ class InMemoryCaseUnitOfWork:
                     payload=payload,
                 ),
             )
+
+    def _terminal_or_event(
+        self,
+        data: _CaseData,
+        command_id: UUID,
+        event_type: str,
+    ) -> EventEnvelope:
+        for event in reversed(data.events):
+            if event.command_id == command_id and event.event_type == event_type:
+                return event
+        raise RuntimeError(
+            f"command status references missing event: {command_id} {event_type}"
+        )
 
     async def list_events(
         self,

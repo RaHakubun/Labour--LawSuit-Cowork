@@ -9,6 +9,7 @@ from Agents.application.handlers.base import ExecutionBatch
 from Agents.domain.case_state import CaseAggregate, utc_now
 from Agents.domain.commands import CancelOperationPayload, CaseCommand
 from Agents.domain.events import EventDraft, EventEnvelope
+from Agents.domain.errors import PatchRejectedError, error_payload
 from Agents.domain.state_manager import DomainStateManager
 from Agents.domain.snapshot_migrations import load_case_aggregate
 
@@ -103,7 +104,6 @@ class PostgresCaseUnitOfWork:
                     f"expected_case_version={command.expected_case_version} does not "
                     f"match case version={case_row.version}"
                 )
-            now = utc_now()
             session.add(
                 CaseCommandRow(
                     command_id=command.command_id,
@@ -115,7 +115,7 @@ class PostgresCaseUnitOfWork:
                     status="accepted",
                     error_json=None,
                     created_at=command.created_at,
-                    started_at=now,
+                    started_at=None,
                     completed_at=None,
                 )
             )
@@ -133,11 +133,98 @@ class PostgresCaseUnitOfWork:
             )
             return AcceptCommandResult(command, True, [event])
 
+    async def reject_command(
+        self,
+        command: CaseCommand,
+        error: Exception,
+    ) -> EventEnvelope:
+        async with self._session_factory.begin() as session:
+            case_row = await self._locked_case(session, command.case_id)
+            return self._append_event(
+                session,
+                case_row,
+                command,
+                EventDraft(
+                    event_type="command.rejected",
+                    producer="CaseRuntime",
+                    visibility="user",
+                    payload=error_payload(error),
+                ),
+                case_version=case_row.version,
+            )
+
+    async def find_command(
+        self,
+        case_id: UUID,
+        idempotency_key: str,
+    ) -> AcceptCommandResult | None:
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(CaseCommandRow).where(
+                    CaseCommandRow.case_id == case_id,
+                    CaseCommandRow.idempotency_key == idempotency_key,
+                )
+            )
+            if row is None:
+                return None
+            command = CaseCommand.model_validate(row.command_json)
+            events = await self._events_for_command(session, command.command_id)
+            return AcceptCommandResult(command, False, events)
+
+    async def start_command(self, command: CaseCommand) -> EventEnvelope:
+        async with self._session_factory.begin() as session:
+            case_row = await self._locked_case(session, command.case_id)
+            command_row = await session.get(CaseCommandRow, command.command_id)
+            if command_row is None:
+                raise KeyError(f"command not found: {command.command_id}")
+            if command_row.status == "running":
+                return await self._event_by_type(
+                    session,
+                    command.command_id,
+                    "operation.started",
+                )
+            if command_row.status != "accepted":
+                raise ValueError(
+                    f"command cannot start from status={command_row.status}"
+                )
+            command_row.status = "running"
+            command_row.started_at = utc_now()
+            return self._append_event(
+                session,
+                case_row,
+                command,
+                EventDraft(
+                    event_type="operation.started",
+                    producer="CaseRuntime",
+                    visibility="user",
+                    payload={"status": "running"},
+                ),
+                case_version=case_row.version,
+            )
+
+    async def list_recoverable_commands(self) -> list[CaseCommand]:
+        return await self._commands_with_status("accepted")
+
+    async def list_interrupted_commands(self) -> list[CaseCommand]:
+        return await self._commands_with_status("running")
+
+    async def _commands_with_status(self, status: str) -> list[CaseCommand]:
+        async with self._session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(CaseCommandRow)
+                    .where(CaseCommandRow.status == status)
+                    .order_by(CaseCommandRow.created_at)
+                )
+            ).all()
+            return [CaseCommand.model_validate(row.command_json) for row in rows]
+
     async def commit_batch(
         self,
         command: CaseCommand,
         batch: ExecutionBatch,
     ) -> list[EventEnvelope]:
+        rejection: PatchRejectedError | None = None
         async with self._session_factory.begin() as session:
             case_row = await self._locked_case(session, command.case_id)
             aggregate = load_case_aggregate(case_row.state_json)
@@ -159,39 +246,57 @@ class PostgresCaseUnitOfWork:
                 )
                 result = self._state_manager.apply_patch(aggregate, batch.patch)
                 if not result.accepted:
-                    raise ValueError("; ".join(result.errors))
-                case_row.version = aggregate.version
-                case_row.stage = aggregate.state.interaction.stage.value
-                case_row.state_json = aggregate.model_dump(mode="json")
-                case_row.updated_at = aggregate.updated_at
-                session.add(
-                    CaseSnapshotRow(
-                        case_id=aggregate.case_id,
-                        version=aggregate.version,
-                        schema_version=aggregate.schema_version,
-                        state_json=aggregate.model_dump(mode="json"),
-                        created_at=aggregate.updated_at,
+                    committed.append(
+                        self._append_event(
+                            session,
+                            case_row,
+                            command,
+                            EventDraft(
+                                event_type="patch.rejected",
+                                producer="StateManager",
+                                visibility="user",
+                                payload={
+                                    "patch_id": str(batch.patch.patch_id),
+                                    "errors": result.errors,
+                                },
+                            ),
+                            case_version=aggregate.version,
+                        )
                     )
-                )
-                await self._sync_projections(session, aggregate)
-                committed.append(
-                    self._append_event(
-                        session,
-                        case_row,
-                        command,
-                        EventDraft(
-                            event_type="patch.applied",
-                            producer="StateManager",
-                            visibility="internal",
-                            payload={
-                                "patch_id": str(batch.patch.patch_id),
-                                "new_version": aggregate.version,
-                            },
-                        ),
-                        case_version=aggregate.version,
+                    rejection = PatchRejectedError(result.errors, committed)
+                else:
+                    case_row.version = aggregate.version
+                    case_row.stage = aggregate.state.interaction.stage.value
+                    case_row.state_json = aggregate.model_dump(mode="json")
+                    case_row.updated_at = aggregate.updated_at
+                    session.add(
+                        CaseSnapshotRow(
+                            case_id=aggregate.case_id,
+                            version=aggregate.version,
+                            schema_version=aggregate.schema_version,
+                            state_json=aggregate.model_dump(mode="json"),
+                            created_at=aggregate.updated_at,
+                        )
                     )
-                )
-            for draft in batch.events:
+                    await self._sync_projections(session, aggregate)
+                    committed.append(
+                        self._append_event(
+                            session,
+                            case_row,
+                            command,
+                            EventDraft(
+                                event_type="patch.applied",
+                                producer="StateManager",
+                                visibility="internal",
+                                payload={
+                                    "patch_id": str(batch.patch.patch_id),
+                                    "new_version": aggregate.version,
+                                },
+                            ),
+                            case_version=aggregate.version,
+                        )
+                    )
+            for draft in batch.events if rejection is None else []:
                 envelope = self._append_event(
                         session,
                         case_row,
@@ -211,7 +316,9 @@ class PostgresCaseUnitOfWork:
                             created_at=envelope.occurred_at,
                         )
                     )
-            return committed
+        if rejection is not None:
+            raise rejection
+        return committed
 
     async def _sync_projections(
         self,
@@ -263,16 +370,22 @@ class PostgresCaseUnitOfWork:
             command_row = await session.get(CaseCommandRow, command.command_id)
             if command_row is None:
                 raise KeyError(f"command not found: {command.command_id}")
+            if command_row.status in {"completed", "failed", "cancelled"}:
+                return await self._event_by_type(
+                    session,
+                    command.command_id,
+                    {
+                        "completed": "operation.completed",
+                        "failed": "operation.failed",
+                        "cancelled": "operation.cancelled",
+                    }[command_row.status],
+                )
             command_row.status = (
                 "cancelled" if cancelled else "failed" if error else "completed"
             )
             command_row.completed_at = utc_now()
             command_row.error_json = (
-                {
-                    "code": type(error).__name__,
-                    "message": str(error),
-                    "retryable": False,
-                }
+                error_payload(error)
                 if error
                 else None
             )
@@ -338,6 +451,27 @@ class PostgresCaseUnitOfWork:
             )
         ).all()
         return [EventEnvelope.model_validate(row.envelope_json) for row in rows]
+
+    async def _event_by_type(
+        self,
+        session: AsyncSession,
+        command_id: UUID,
+        event_type: str,
+    ) -> EventEnvelope:
+        row = await session.scalar(
+            select(CaseEventRow)
+            .where(
+                CaseEventRow.command_id == command_id,
+                CaseEventRow.event_type == event_type,
+            )
+            .order_by(CaseEventRow.sequence.desc())
+            .limit(1)
+        )
+        if row is None:
+            raise RuntimeError(
+                f"command status references missing event: {command_id} {event_type}"
+            )
+        return EventEnvelope.model_validate(row.envelope_json)
 
     def _append_event(
         self,

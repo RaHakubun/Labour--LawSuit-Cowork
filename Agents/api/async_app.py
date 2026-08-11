@@ -98,6 +98,7 @@ def create_async_case_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        await registry.recover()
         yield
         await registry.shutdown()
         for callback in shutdown_callbacks or []:

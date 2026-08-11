@@ -26,6 +26,24 @@ class CaseUnitOfWork(Protocol):
 
     async def accept_command(self, command: CaseCommand) -> AcceptCommandResult: ...
 
+    async def reject_command(
+        self,
+        command: CaseCommand,
+        error: Exception,
+    ) -> EventEnvelope: ...
+
+    async def find_command(
+        self,
+        case_id: UUID,
+        idempotency_key: str,
+    ) -> AcceptCommandResult | None: ...
+
+    async def start_command(self, command: CaseCommand) -> EventEnvelope: ...
+
+    async def list_recoverable_commands(self) -> list[CaseCommand]: ...
+
+    async def list_interrupted_commands(self) -> list[CaseCommand]: ...
+
     async def commit_batch(
         self,
         command: CaseCommand,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Sequence
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from Agents.application.handlers.base import CommandHandler
 from Agents.domain.commands import CaseCommand
 from Agents.domain.commands import CancelOperationPayload
 from Agents.domain.events import EventEnvelope
+from Agents.domain.errors import CaseBusyError, PatchRejectedError
 from Agents.infrastructure.uow import AcceptCommandResult, CaseUnitOfWork
 
 from .broadcast import CaseBroadcast
@@ -29,34 +31,47 @@ class CaseRuntime:
         self._broadcast = CaseBroadcast()
         self._closed = False
         self._active_command: CaseCommand | None = None
-        self._active_execution: asyncio.Task[list[EventEnvelope]] | None = None
+        self._active_execution: asyncio.Task[None] | None = None
         self._submitted_operations: set[UUID] = set()
         self._cancelled_operations: set[UUID] = set()
+        self._submit_lock = asyncio.Lock()
+        self._last_activity = time.monotonic()
 
     async def submit(self, command: CaseCommand) -> AcceptCommandResult:
         if self._closed:
             raise RuntimeError("case runtime is closed")
         if command.case_id != self.case_id:
             raise ValueError("command case_id does not match runtime")
-        accepted = await self._unit_of_work.accept_command(command)
-        for event in accepted.events:
-            await self._broadcast.publish(event)
-        if accepted.is_new:
-            if isinstance(command.payload, CancelOperationPayload):
-                await self._request_cancellation(command)
-                return accepted
-            self._submitted_operations.add(command.command_id)
-            try:
+        async with self._submit_lock:
+            existing = await self._unit_of_work.find_command(
+                command.case_id,
+                command.idempotency_key,
+            )
+            if existing is not None:
+                return existing
+            if not isinstance(command.payload, CancelOperationPayload) and self._queue.full():
+                error = CaseBusyError()
+                rejected = await self._unit_of_work.reject_command(command, error)
+                await self._broadcast.publish(rejected)
+                raise error
+            accepted = await self._unit_of_work.accept_command(command)
+            self._last_activity = time.monotonic()
+            for event in accepted.events:
+                await self._broadcast.publish(event)
+            if accepted.is_new:
+                if isinstance(command.payload, CancelOperationPayload):
+                    await self._request_cancellation(command)
+                    return accepted
+                self._submitted_operations.add(command.command_id)
                 self._queue.put_nowait(command)
-            except asyncio.QueueFull as exc:
-                failure = await self._unit_of_work.finish_command(
-                    command,
-                    error=RuntimeError("case command queue is full"),
-                )
-                await self._broadcast.publish(failure)
-                self._submitted_operations.discard(command.command_id)
-                raise RuntimeError("case_busy") from exc
         return accepted
+
+    async def restore(self, command: CaseCommand) -> None:
+        if command.case_id != self.case_id:
+            raise ValueError("command case_id does not match runtime")
+        self._submitted_operations.add(command.command_id)
+        self._last_activity = time.monotonic()
+        await self._queue.put(command)
 
     async def run(self) -> AsyncIterator[EventEnvelope]:
         while not self._closed:
@@ -71,9 +86,19 @@ class CaseRuntime:
                     yield cancelled
                     continue
                 self._active_command = command
-                self._active_execution = asyncio.create_task(self._execute(command))
-                for event in await self._active_execution:
+                started = await self._unit_of_work.start_command(command)
+                await self._broadcast.publish(started)
+                yield started
+                output: asyncio.Queue[EventEnvelope | None] = asyncio.Queue()
+                self._active_execution = asyncio.create_task(
+                    self._execute(command, output)
+                )
+                while True:
+                    event = await output.get()
+                    if event is None:
+                        break
                     yield event
+                await self._active_execution
                 if command.command_id in self._cancelled_operations:
                     cancelled = await self._unit_of_work.finish_command(
                         command,
@@ -104,21 +129,33 @@ class CaseRuntime:
                 self._submitted_operations.discard(command.command_id)
                 self._cancelled_operations.discard(command.command_id)
                 self._queue.task_done()
+                self._last_activity = time.monotonic()
 
-    async def _execute(self, command: CaseCommand) -> list[EventEnvelope]:
+    async def _execute(
+        self,
+        command: CaseCommand,
+        output: asyncio.Queue[EventEnvelope | None],
+    ) -> None:
         aggregate = await self._unit_of_work.get_case(command.case_id)
         handler = self._resolve_handler(command.command_type)
-        committed: list[EventEnvelope] = []
-        async for batch in handler.execute(command, aggregate):
-            events = await self._unit_of_work.commit_batch(command, batch)
-            refreshed = await self._unit_of_work.get_case(command.case_id)
-            aggregate.state = refreshed.state
-            aggregate.version = refreshed.version
-            aggregate.updated_at = refreshed.updated_at
-            for event in events:
-                await self._broadcast.publish(event)
-                committed.append(event)
-        return committed
+        try:
+            async for batch in handler.execute(command, aggregate):
+                try:
+                    events = await self._unit_of_work.commit_batch(command, batch)
+                except PatchRejectedError as exc:
+                    for event in exc.events:
+                        await self._broadcast.publish(event)
+                        await output.put(event)
+                    raise
+                refreshed = await self._unit_of_work.get_case(command.case_id)
+                aggregate.state = refreshed.state
+                aggregate.version = refreshed.version
+                aggregate.updated_at = refreshed.updated_at
+                for event in events:
+                    await self._broadcast.publish(event)
+                    await output.put(event)
+        finally:
+            await output.put(None)
 
     async def _request_cancellation(self, command: CaseCommand) -> None:
         payload = command.payload
@@ -177,6 +214,13 @@ class CaseRuntime:
 
     def close(self) -> None:
         self._closed = True
+
+    def is_idle_for(self, seconds: float) -> bool:
+        return (
+            self._active_command is None
+            and self._queue.empty()
+            and time.monotonic() - self._last_activity >= seconds
+        )
 
     def _resolve_handler(self, command_type: str) -> CommandHandler:
         matches = [handler for handler in self._handlers if handler.supports(command_type)]
