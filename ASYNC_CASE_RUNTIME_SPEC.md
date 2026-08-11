@@ -1,12 +1,12 @@
 # Labour Lawsuit 案件级异步事件流架构迭代 Spec
 
-> 状态：代码施工完成（M0–M7 已落地；真实 PostgreSQL 故障注入与 LLM/MCP staging 仍需部署环境验收）
-> 目标分支：`lbw`
-> 基线提交：`311e9a8c7e3f3f722ca5c280c9b38a8635a3cd2e`
+> 状态：架构代码完成；本机 PostgreSQL 与应用质量门禁已验收；真实 LLM/MCP/视觉 OCR staging 待受控凭据
+> 开发分支：`codex/complete-case-runtime`
+> 对齐基线：`lbw` / `ff1e422`
 > 适用范围：当前仓库后端，以及后续恢复到仓库中的案件工作台前端
 > 架构决策：采用“ControllerAgent 高层协调 + 案件级异步事件流 + async generator 运行时”。ControllerAgent 是唯一调度中枢，其余领域概念均服务于 Controller 的受控编排；系统内部 Agent 路由不设置用户确认门禁。
 
-> 2026-07-31 实施记录：生产入口为 `Agents.async_api:app`；已落地 Pydantic v2 领域契约、原子 StateManager、Postgres/Alembic、案件级有界队列、async generator、幂等命令、严格事件序号、SSE 历史续传、Bearer 所有权鉴权、异步 Controller/Scenario/Legal adapter、ToolHub 与权威检索、隔离证据存储、TXT/CSV/JSON/PDF/DOCX 解析、事实确认、确定性规则计算、分析与仲裁申请书版本化以及 React 案件工作台。Controller 的 `route_scenario` 决策会在同一命令中直接驱动 Scenario 和检索，公共协议不包含内部 Agent 调度确认。旧同步 `/sessions` 主链及对应实现已删除。当前执行环境没有 PostgreSQL 服务端及真实 LLM/MCP 测试凭据，因此外部 staging 与真实 Postgres 事务故障注入仍未验收。
+> 2026-08-11 实施记录：生产入口为 `Agents.async_api:app`；案件快照为 schema 2.0 并提供唯一 1.0→2.0 迁移；单一 `CaseOrchestrator`、六类 ControllerDecision、原子 StateManager、PostgreSQL/Alembic v2、案件队列恢复与严格终态、增量 ExecutionBatch、SSE 续传、证据正文分离、文本/扫描 PDF、PNG/JPEG 视觉 OCR、typed MCP/OCR 错误、同命令规则计算、分析/仲裁申请书版本链及 React 案卷工作台均已落地。本机 PostgreSQL 故障注入和 70 项后端回归已通过，前端 lint/build/audit 已通过；当前环境没有受控 LLM/MCP/OCR 凭据，因此不把外部 staging 标记为完成。
 
 ## 1. 决策摘要
 
@@ -238,7 +238,7 @@ Postgres 是正式存储，推荐使用 SQLAlchemy 2 async + asyncpg，迁移使
 | `GET /cases/{case_id}/artifacts` | 获取产物版本列表 | artifacts projection |
 | `GET /cases/{case_id}/artifacts/{artifact_id}` | 下载/查看指定版本 | 受权内容 |
 
-为了降低前端一次迁移成本，现有 `/sessions/{id}/turns/stream` 可以短期作为 compatibility route，但它必须调用同一个 `CaseCommandService` 和事件流，不能保留旧的同步业务主路径。兼容 route 在前端迁移完成后删除，删除条件和目标版本写入 changelog。
+不存在 `/sessions/{id}/turns/stream` compatibility route。前端已经完全迁移到 typed command、case projection、evidence、artifact 与 SSE 契约，生产运行时只有一条异步业务主链。
 
 SSE 用户可见事件统一为：
 
@@ -307,23 +307,23 @@ Agents/
 
 ## 13. 实施顺序
 
-### M0：可信基线与可复现环境
+### M0：可信基线与可复现环境（已完成）
 
 先撤销并移除硬编码凭据，停止追踪运行时 session/upload，补齐依赖与环境示例，修复上传路径，更新失真的集成报告状态。完成标志是全新环境可按 README 安装并启动，缺配置时明确失败，仓库不再包含可用 secret，现有真实测试可以稳定执行。M0 不做业务 fallback。
 
-### M1：强类型领域契约与原子 StateManager
+### M1：强类型领域契约与原子 StateManager（已完成）
 
 建立 `domain/commands.py`、`events.py`、typed `CaseState`、领域 patch、状态迁移表和内存副本校验；提供现有 snapshot → schema v1 的显式迁移。完成标志是现有状态能力迁移完成，所有 patch 均为 all-or-nothing，事实冲突、过期版本、越权引用和非法阶段迁移都有真实断言。
 
-### M2：Postgres Repository 与事件提交
+### M2：Postgres Repository 与事件提交（已完成）
 
 加入 SQLAlchemy async、Alembic、Unit of Work 和核心表，实现创建案件、命令幂等、案件序号、snapshot、event append、消息/产物投影。完成标志是进程重启后可恢复案件，重复 command 不重复副作用，事务故障不会出现“状态已改但事件未写”或反向不一致。
 
-### M3：案件级 CaseRuntime
+### M3：案件级 CaseRuntime（已完成）
 
 实现 registry、per-case bounded queue、runner、broadcast 和 async generator，先迁移 `submit_user_message` 主命令，并验证 Controller 决策可以在同一命令内继续驱动专业阶段。完成标志是同一案件两个并发消息严格按序，不同案件可以并发推进，SSE 断线重连可从 sequence 恢复，当前线程池轮询链路被移除。
 
-### M4：Controller 与 Scenario 完整迁移
+### M4：Controller 与 Scenario 完整迁移（已完成）
 
 实现 typed ControllerDecision、ScenarioResult、模板完整性启动校验、异步 LLM adapter、ToolHub 和权威检索结果模型；删除三轮追问后的合成分析 fallback。完成标志是 intake → clarification，或 Controller 直接调度 scenario → authority retrieval 的业务路径能在同一命令中以真实事件推进，MCP 失败不会产生无依据结论。
 
@@ -338,6 +338,19 @@ Agents/
 ### M7：API 收敛与前端工作台（已完成）
 
 将现有 route 迁移到 command/SSE/query 契约，恢复并接入真实前端源码，完成对话区、事实确认区、证据区、争议焦点区、文书区和运行状态区。完成标志是前端不生成业务结论、不展示裸内部 JSON，可处理重连、pending action、失败事件和产物版本。若前端源码尚未恢复，本阶段不得打勾。
+
+### 2026-08-11 验收证据
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 后端领域/Runtime/API/适配器 | 通过 | 70 项 `unittest`，包含真实 PostgreSQL 原子回滚 |
+| Python 静态门禁 | 通过 | Ruff 全仓、Mypy `Agents`/`utils` |
+| 数据库迁移 | 通过 | v1→v2 upgrade、downgrade、再次 upgrade 与 offline SQL |
+| 前端 | 通过 | ESLint、Vite 8.2.1 production build、`npm audit` 0 vulnerability |
+| 浏览器布局 | 通过 | 桌面和 390px 视口渲染、控制台无错误 |
+| 真实 LLM/MCP/OCR staging | 待执行 | 当前环境对应凭据均未配置；使用 `scripts/run_staging_case.py` 执行，禁止假响应代替 |
+
+因此“架构代码完成”和“外部 staging 完成”是两个独立状态。没有真实 LLM/MCP/OCR 调用证据时，不得把整个 Definition of Done 标为完成。
 
 ## 14. 测试与验收策略
 

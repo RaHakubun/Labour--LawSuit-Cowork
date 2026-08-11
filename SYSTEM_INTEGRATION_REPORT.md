@@ -1,160 +1,83 @@
-# 劳动法多 Agent 系统前后端一体化报告
+# 案件级异步劳动争议工作台集成报告
 
-> 历史报告，已停止作为完成度基线。当前实现以 `ASYNC_CASE_RUNTIME_SPEC.md`、`Agents.async_api:app` 和新 `jobpilot-front` 为准；本文描述的旧 `/sessions`、同步 SessionService、同步 EventBus 与内部 handoff 架构均已删除。
+> 更新时间：2026-08-11
+>
+> 分支：`codex/complete-case-runtime`（对齐 `lbw` / `ff1e422`）
+>
+> 判定原则：只记录实际代码与验证证据；外部服务未真实调用时保持未完成。
 
-## 1. 报告目的
-- 明确当前 `jobpilot-front` 与现有后端 Agent/工具能力的真实匹配度。
-- 识别所有阻断上线的系统级问题。
-- 固化一份可执行、可验收、可持续追踪的改造方案。
-- 作为后续开发的唯一进度基线，持续更新本文件的状态项。
+## 1. 当前结论
 
-## 2. 调查范围
-- 前端：`jobpilot-front/src` 全量组件、数据流、状态管理。
-- 后端：`Agents/`、`utils/`、`Prompt_Template/`、`Example/`、`tests/`。
-- 路由链路：`ControllerAgent -> ScenarioAgent -> LegalAnalysisAgent`。
-- 工具链路：MCP 工具调用与劳动法规则计算器。
+案件级异步架构代码已经完成。生产入口只有 `Agents.async_api:app`，不存在旧同步 `/sessions`、双写服务、兼容业务链、dummy handler 或外部失败后的法律结论 fallback。
 
-## 3. 核心结论
-1. 前端主对话链路已完成后端真实接入，不再走本地 mock 主路径。
-2. 后端会话 API、三段式状态机、handoff 事件、会话持久化均已落地并验证通过。
-3. 三身份模块已接入后端约束：`role_id` 与 `module_key` 会进行一致性校验。
-4. 用工单位三模块（合规扫描/合同模板/沟通指南）已接入后端直连服务。
-5. 模板协议审计通过，`scene_id.enum` 与后端场景目录保持一致。
+本机 PostgreSQL、Runtime、API 和前端门禁已经通过。真实法律推理 LLM、法源 MCP 和视觉 OCR staging 尚未执行，因为当前环境未配置受控测试凭据；这是一项明确的发布前外部验收，不以 mock 或协议样本替代。
 
-## 4. 当前能力矩阵
+## 2. 架构落地矩阵
 
-### 4.1 前端能力
-- 身份选择：已具备（3 角色）。
-- 模块入口：已具备（9 模块）。
-- 自动模块匹配：已具备（关键词匹配）。
-- 溯源与步骤展示 UI：已具备（但数据来源主要为本地/Mock）。
-- 会话历史：仅元数据，无法恢复完整消息链。
-- 消息生成：本地生成，无后端请求。
+| 能力 | 状态 | 实现与证据 |
+|---|---|---|
+| schema 2.0 与迁移 | 已完成 | 强类型 pending confirmation、证据抽取、事实—证据链接、备注与缺失信息；未知版本拒绝 |
+| 单一 Controller 编排 | 已完成 | 六类 decision + `CaseOrchestrator`；显式命令归一为确定性 decision |
+| StateManager | 已完成 | producer 权限、迁移、引用完整性、冲突、patch 原子性、依赖级 stale |
+| 命令生命周期 | 已完成 | accepted/running/completed/failed/cancelled；accepted 命令唯一终态 |
+| Runtime 可靠性 | 已完成 | 同案串行、跨案并发、增量批次广播、取消、backpressure、恢复、空闲回收、shutdown |
+| PostgreSQL | 已完成 | 行锁、幂等唯一约束、snapshot/event/projection 同事务、消息/证据/产物投影、Alembic v2 |
+| 证据与 OCR | 代码完成 | 原件/正文/哈希/解析元数据/真实性风险分离；TXT/CSV/JSON/DOCX/PDF/PNG/JPEG；独立视觉 OCR |
+| ToolHub 与法源 | 代码完成 | typed result/error；仅连接、429、明确 5xx 重试；协议/鉴权错误立即失败 |
+| 规则、分析与文书 | 已完成 | 可追溯规则输入、受控 Legal context、争议焦点、法律分析报告和仲裁申请书版本链 |
+| API | 已完成 | command/query/evidence/SSE Router；统一错误体；事件游标分页；Last-Event-ID 与心跳 |
+| React 工作台 | 已完成 | 三角色、完整历史、pending、冲突、证据状态、法源、规则、失败事件与文书版本；无 350ms 轮询 |
+| 真实外部 staging | 未完成 | 缺少本轮受控 LLM/MCP/OCR 凭据；不得标记为通过 |
 
-### 4.2 后端能力
-- Controller/Scenario/Legal 三段式编排：已具备。
-- `askmore` 循环机制：已具备。
-- MCP 调用与历史注入：已具备。
-- 劳动法规则计算器：已具备（含省市社平工资 3 倍封顶逻辑）。
-- 会话服务化接口：已具备。
-- 前端渲染协议：已具备。
-- 控制权移交事件协议：已具备（前端可视化）。
+## 3. 验证记录
 
-### 4.3 前端 9 模块与后端覆盖
-- `compensation_calculator`：已接入（worker 模块路由 + 会话链路）。
-- `evidence_checker`：已接入（worker 模块路由 + 场景链路）。
-- `strategy_advisor`：已接入（worker 模块路由 + 场景链路）。
-- `compliance_scanner`：已接入（employer 直连模块服务）。
-- `contract_templates`：已接入（employer 直连模块服务）。
-- `communication_guide`：已接入（employer 直连模块服务）。
-- `law_search`：已接入（lawyer 模块路由 + 场景链路）。
-- `evidence_organizer`：已接入（lawyer 模块路由 + 场景链路）。
-- `lawyer_compensation`：已接入（lawyer 模块路由 + 会话链路）。
+### 后端
 
-## 5. P0/P1 问题清单
+- 70 项 `unittest` 通过。
+- 使用本机 PostgreSQL 17.5 测试库执行真实事务回滚测试。
+- 覆盖幂等、恢复、并发顺序、队列容量、取消、patch rejection 与事件终态。
+- Ruff 全仓通过。
+- Mypy `Agents` 与 `utils` 通过。
+- Alembic v2 upgrade、downgrade、再次 upgrade 与 offline SQL 已通过。
 
-### 5.1 P0（必须优先清零）
-1. 无。
+### 前端
 
-### 5.2 P1（高优先）
-1. 附件仅元数据，尚未落地文件内容解析链路。
-2. 前端 ESLint 仍有历史规则告警（不阻塞 build）。
+- ESLint 通过。
+- Vite 8.2.1 production build 通过。
+- `npm audit --audit-level=low`：0 vulnerabilities。
+- 桌面与 390px 移动视口完成浏览器渲染检查，控制台无 error/warning。
 
-## 6. 目标架构（成熟化）
-- `Frontend`：纯展示与交互。
-- `Conversation API`：会话创建、消息推进、历史读取、事件流。
-- `Orchestrator`：Controller/Scenario/Legal 状态机。
-- `Tool Layer`：MCP + 劳动法计算器 + 合同/沟通能力服务。
-- `Presentation Adapter`：把后端结构转为前端渲染块，禁止裸 JSON。
-- `Storage`：会话、消息、事件、工具调用、审计日志。
-- `Observability`：状态迁移、错误暴露、链路追踪。
+### 外部边界
 
-## 7. 强约束开发原则
-1. 不做“最小可用”降配方案。
-2. 不做静默 fallback；协议不满足必须暴露错误。
-3. 不做 dummy 用例掩盖问题；所有失败项必须可复现可定位。
-4. 前端对话区禁止裸 JSON/裸结构数据展示。
-5. Agent 控制权移交必须在前端可视化。
-6. 每次开发后更新本文件“进度检查表”。
+- LLM/MCP/OCR 的 typed 协议解析和错误分类由审校协议样本覆盖。
+- 这些合约测试不是 staging 完成证明。
+- 当前 `LLM_*`、`OCR_*`、`PKULAW_MCP_TOKEN` 与 staging API 配置均未设置，所以没有生成外部成功报告。
 
-## 8. 分阶段实施计划
+## 4. 发布前唯一未完成门禁
 
-### 阶段 A：协议冻结与模型统一
-- 定义会话状态机、消息协议、事件协议、渲染块协议。
-- 固化场景目录、角色目录与模块映射。
-- 增加模板协议审计，暴露 scene_id 异常。
+- [ ] 使用受控测试账号真实调用法律推理 LLM。
+- [ ] 使用受控测试账号真实调用法源 MCP，并验证鉴权失败和超时。
+- [ ] 使用受控视觉模型处理去身份化扫描解除材料，并验证 OCR 失败。
+- [ ] 完整执行追问 → 场景路由 → 合同/工资/扫描证据 → 冲突确认 → 法源 → 赔偿规则 → 分析 → 仲裁申请书 → 版本更新 → SSE 重连。
+- [ ] 在 staging 分别注入 LLM 协议错误、数据库事务中断和客户端断线，确认无无依据产物。
 
-### 阶段 B：后端服务化
-- 新增会话 API。
-- 将编排器从控制台模式升级为服务模式。
-- 输出结构化事件（包括 handoff）。
+执行入口：
 
-### 阶段 C：前端数据层重构
-- 删除本地业务生成路径。
-- 全量切换至后端会话 API。
-- 增加“当前接管 Agent”与“handoff 横幅”展示。
+```bash
+export STAGING_API_BASE=https://controlled-staging.example/api/v1
+export STAGING_API_TOKEN=managed-test-token
+python scripts/run_staging_case.py \
+  --contract /secure/deidentified-contract.txt \
+  --wage-record /secure/deidentified-wage.csv \
+  --conflicting-wage-record /secure/deidentified-conflicting-wage.csv \
+  --scanned-notice /secure/deidentified-scanned-notice.png
+```
 
-### 阶段 D：模块能力补齐
-- 劳动者/律师链路全接入。
-- 用工单位缺口能力补齐（合规、模板、沟通）。
-- MCP 与计算器结果统一结构化呈现。
+脚本通过真实 SSE 等待命令终态，并主动断开一次后携带 `Last-Event-ID` 重连。缺少法源、规则结果、两类产物、第二版产物或重连证据时直接失败。
 
-### 阶段 E：全链路质量与验收
-- 端到端场景压测与回归。
-- 协议一致性与状态迁移测试。
-- 错误暴露机制验收。
+## 5. 安全结论
 
-## 9. 进度检查表（唯一追踪）
-
-### 阶段 A：协议冻结与模型统一
-- [x] A1 形成系统分析报告并落地根目录
-- [x] A2 建立可维护的场景目录代码常量
-- [x] A3 建立前端展示适配层代码骨架（禁止裸 JSON 直出）
-- [x] A4 建立模板协议审计脚本并产出异常报告
-- [x] A5 固化会话/消息/事件契约文档
-
-### 阶段 B：后端服务化
-- [x] B1 会话 API 设计与实现
-- [x] B2 状态机编排服务化
-- [x] B3 handoff 事件输出标准化
-- [x] B4 会话与事件持久化
-
-### 阶段 C：前端数据层重构
-- [x] C1 移除本地 `generateModuleResponse` 主路径
-- [x] C2 接入会话 API 与事件流
-- [x] C3 实现 Agent 接管态可视化
-- [x] C4 实现无裸数据渲染规范
-
-### 阶段 D：模块能力补齐
-- [x] D1 劳动者三模块后端全接入
-- [x] D2 律师三模块后端全接入
-- [x] D3 用工单位三模块后端能力补齐
-- [x] D4 工具结果卡片化与可追溯展示
-
-### 阶段 E：质量验收
-- [x] E1 端到端主链路验收
-- [x] E2 协议一致性验收
-- [x] E3 错误暴露与审计验收
-- [x] E4 发布前回归验收
-
-## 10. 当前阻断提醒
-- 无 P0 阻断。
-- 当前剩余改进项：附件文件内容解析链路、前端历史 ESLint 规则治理。
-
-## 11. 最近进展记录
-- 2026-04-10：新增 `Agents/scene_catalog.py`，统一场景、角色、模块映射及校验接口。
-- 2026-04-10：新增 `Agents/presentation_adapter.py`，将 Agent 输出转为前端可渲染块，避免裸 JSON 直接渲染。
-- 2026-04-10：新增 `scripts/audit_prompt_templates.py` 与 `PROMPT_TEMPLATE_AUDIT.md`，并已将模板 `scene_id.enum` 审计项全部修复为一致。
-- 2026-04-10：新增 `Agents/conversation_contract.py`，固化会话、消息、handoff 事件数据结构与校验规则。
-- 2026-04-10：新增 `scripts/check_integration_progress.py`，可对本报告打勾项做自动化进度检查。
-- 2026-04-10：新增 `Agents/session_service.py` 服务化状态机编排，支持 `Controller -> Scenario -> Legal` 全链路会话推进。
-- 2026-04-10：新增 `Agents/api_server.py` 会话 API（`/sessions`、`/turns`、`/messages`、`/health`），输出统一消息与 handoff 结构。
-- 2026-04-10：为 `MultiAgentSessionService` 增加文件快照持久化（`storage/sessions/*.json`）及重启恢复加载能力。
-- 2026-04-10：新增 `tests/test_api_server.py` 与会话持久化测试，当前 `python -m unittest discover -s tests -p 'test_*.py' -v` 全量通过。
-- 2026-04-10：前端新增 `jobpilot-front/src/services/conversationApi.js` 与 `responseAdapter.js`，`ChatPanel` 已切换为真实会话 API，移除本地 mock 生成主路径。
-- 2026-04-10：前端新增 handoff 横幅与当前发言 Agent 标签，用户可见控制权移交过程且不渲染裸 JSON。
-- 2026-04-11：新增 `Agents/module_services.py` 并接入 `session_service`，用工单位三模块可走后端直连能力（`EmployerModuleAgent`）。
-- 2026-04-11：`session_service` 新增 `module_key` + `role_id` 一致性校验，worker/lawyer 模块会注入场景提示并进入主链路。
-- 2026-04-11：`presentation_adapter` 新增工具结果卡片化输出（`tool_result_card`），提升工具结果可读性与可追溯性。
-- 2026-04-11：`api_server` 增加 `ValueError -> 400` 统一错误暴露；新增模块路由相关测试后，`python -m unittest discover -s tests -p 'test_*.py' -v` 通过（75/75）。
-- 2026-04-11：前端 `npm run build` 成功，通过生产构建回归。
+- 当前分支未新增密钥；`.env`、证据存储和运行产物保持忽略。
+- OCR 与法律推理使用独立配置，不静默复用模型。
+- 旧历史中的疑似密钥继续按已泄露处理；按既定决策不重写 Git 历史，账户所有者仍需完成撤销。
+- 真实材料必须先去身份化，凭据只进入本地 `.env` 或 secret manager。

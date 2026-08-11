@@ -15,6 +15,7 @@ from Agents.application.legal_models import (
 )
 from Agents.domain.case_state import CaseState
 from Agents.scene_catalog import (
+    SCENE_IDS,
     get_role_scene_template_path,
     validate_role_id,
     validate_scene_id,
@@ -88,6 +89,7 @@ class AsyncOpenAIControllerDecisionProvider:
             '"required_fact_ids":["..."]}。'
             '若可进入场景：{"decision_type":"route_scenario","scene_id":"...",'
             '"reason":"...","current_goal":"..."}。'
+            f"route_scenario.scene_id 只能是：{', '.join(SCENE_IDS)}。"
             '若需用户确认事实：{"decision_type":"request_fact_confirmation",'
             '"fact_ids":["..."],"reason":"..."}。'
             '若可分析：{"decision_type":"request_analysis","reason":"..."}。'

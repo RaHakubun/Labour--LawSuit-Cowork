@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agents.scene_catalog import ROLE_SCENE_TEMPLATE_PATHS, SCENE_IDS
+from Agents.scene_catalog import ROLE_SCENE_TEMPLATE_PATHS, SCENE_IDS  # noqa: E402
 
 
 SCENE_ENUM_RE = re.compile(
@@ -70,7 +70,8 @@ def _to_markdown(results: list[TemplateAuditResult]) -> str:
     lines.append("# Prompt Template 审计报告")
     lines.append("")
     lines.append("## 审计目标")
-    lines.append("- 检查每个场景模板中的 `analysis.scene_id.enum` 是否与后端场景目录一致。")
+    lines.append("- Controller 模板必须覆盖后端全部可路由场景；运行时 contract 收窄到后端目录。")
+    lines.append("- 每个 Scenario 模板的 `analysis.scene_id` 必须与对应场景精确一致。")
     lines.append("- 不做自动修复，只暴露问题。")
     lines.append("")
     lines.append("## 后端场景目录")
@@ -96,7 +97,7 @@ def _to_markdown(results: list[TemplateAuditResult]) -> str:
         lines.append("- 这些问题将直接影响多场景路由一致性。")
         lines.append("- 必须尽快修复模板协议，否则上线链路不可信。")
     else:
-        lines.append("- 全部模板的 `scene_id.enum` 与后端目录一致。")
+        lines.append("- Controller 覆盖全部可路由场景，Scenario 场景协议均精确匹配。")
     lines.append("")
     return "\n".join(lines).strip() + "\n"
 
@@ -116,8 +117,15 @@ def main() -> int:
     if not controller_template.exists():
         raise FileNotFoundError(f"controller template not found: {controller_template}")
 
+    controller_result = _audit_template(controller_template, tuple(SCENE_IDS))
     results: list[TemplateAuditResult] = [
-        _audit_template(controller_template, tuple(SCENE_IDS))
+        TemplateAuditResult(
+            path=controller_result.path,
+            scene_hint=controller_result.scene_hint,
+            expected_values=controller_result.expected_values,
+            enum_values=controller_result.enum_values,
+            is_match=set(SCENE_IDS).issubset(controller_result.enum_values),
+        )
     ]
     for role_id, scene_map in ROLE_SCENE_TEMPLATE_PATHS.items():
         for scene_id, rel_path in sorted(scene_map.items()):
