@@ -278,15 +278,17 @@ class InMemoryCaseUnitOfWork:
         *,
         after_sequence: int = 0,
         user_visible_only: bool = False,
+        limit: int | None = None,
     ) -> list[EventEnvelope]:
         data = self._require(case_id)
         async with data.lock:
-            return [
+            events = [
                 event.model_copy(deep=True)
                 for event in data.events
                 if event.sequence > after_sequence
                 and (not user_visible_only or event.visibility == "user")
             ]
+            return events[:limit] if limit is not None else events
 
     def _append_event(
         self,

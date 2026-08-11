@@ -161,7 +161,7 @@ class AsyncCaseApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["detail"]["code"], "invalid_command")
+        self.assertEqual(response.json()["code"], "invalid_command")
 
     async def test_evidence_upload_is_parsed_and_case_list_is_owner_scoped(self):
         create = await self.client.post(

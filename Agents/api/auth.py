@@ -33,8 +33,10 @@ class BearerTokenAuthenticator:
 
     async def actor_id(
         self,
-        authorization: str = Header(..., alias="Authorization"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> str:
+        if authorization is None:
+            raise HTTPException(status_code=401, detail="Bearer token is required")
         scheme, separator, token = authorization.partition(" ")
         if separator != " " or scheme.lower() != "bearer" or not token.strip():
             raise HTTPException(status_code=401, detail="Bearer token is required")

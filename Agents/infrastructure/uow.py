@@ -64,4 +64,5 @@ class CaseUnitOfWork(Protocol):
         *,
         after_sequence: int = 0,
         user_visible_only: bool = False,
+        limit: int | None = None,
     ) -> list[EventEnvelope]: ...

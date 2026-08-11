@@ -415,6 +415,7 @@ class PostgresCaseUnitOfWork:
         *,
         after_sequence: int = 0,
         user_visible_only: bool = False,
+        limit: int | None = None,
     ) -> list[EventEnvelope]:
         async with self._session_factory() as session:
             query = (
@@ -427,6 +428,8 @@ class PostgresCaseUnitOfWork:
             )
             if user_visible_only:
                 query = query.where(CaseEventRow.visibility == "user")
+            if limit is not None:
+                query = query.limit(limit)
             rows = (await session.scalars(query)).all()
             return [EventEnvelope.model_validate(row.envelope_json) for row in rows]
 
