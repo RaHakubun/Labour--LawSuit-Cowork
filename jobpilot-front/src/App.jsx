@@ -8,7 +8,6 @@ import {
   ChevronRight,
   FileCheck2,
   FileText,
-  KeyRound,
   LoaderCircle,
   MessageSquareText,
   Plus,
@@ -21,6 +20,7 @@ import {
 } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_AGENT_API_BASE || "http://127.0.0.1:8000/api/v1";
+const WORKBENCH_ACCESS_TOKEN = import.meta.env.VITE_WORKBENCH_ACCESS_TOKEN || "";
 const TERMINAL_EVENTS = new Set([
   "operation.completed",
   "operation.failed",
@@ -69,7 +69,7 @@ const eventLabels = {
 };
 
 function App() {
-  const [token, setToken] = useState(() => localStorage.getItem("labour-token") || "");
+  const token = WORKBENCH_ACCESS_TOKEN;
   const [cases, setCases] = useState([]);
   const [activeCase, setActiveCase] = useState(null);
   const [eventsByCase, setEventsByCase] = useState({});
@@ -79,13 +79,17 @@ function App() {
   const [error, setError] = useState("");
   const [showNewCase, setShowNewCase] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsNotice, setSettingsNotice] = useState("");
   const [integrationStatuses, setIntegrationStatuses] = useState([]);
   const terminalWaiters = useRef(new Map());
   const terminalCache = useRef(new Map());
   const busy = requestPending || Boolean(activeOperation);
 
   const api = useCallback(async (path, options = {}) => {
+    if (!token) {
+      const failure = new Error("本地工作台会话未建立，请通过项目启动脚本重新启动服务。");
+      failure.code = "local_session_unavailable";
+      throw failure;
+    }
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
@@ -207,8 +211,7 @@ function App() {
 
   function requestNewCase() {
     if (!token) {
-      setSettingsNotice("新建案件前，请先填写工作台访问令牌。");
-      setShowSettings(true);
+      setError("本地工作台会话未建立，请通过项目启动脚本重新启动服务。");
       return;
     }
     setShowNewCase(true);
@@ -280,29 +283,8 @@ function App() {
     });
   }
 
-  async function saveSettings({ accessToken, integrations }) {
-    const nextToken = accessToken.trim();
-    if (!nextToken) throw new Error("请先填写工作台访问令牌");
-    const request = async (path, options = {}) => {
-      const response = await fetch(`${API_BASE}${path}`, {
-        ...options,
-        headers: {
-          Authorization: `Bearer ${nextToken}`,
-          "Content-Type": "application/json",
-          ...options.headers,
-        },
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const failure = new Error(body.message || body.code || "配置保存失败");
-        failure.code = body.code;
-        throw failure;
-      }
-      return body;
-    };
-
-    const casesBody = await request("/cases");
-    const currentStatuses = await request("/integrations");
+  async function saveSettings({ integrations }) {
+    const currentStatuses = await api("/integrations");
     const statusMap = Object.fromEntries(
       currentStatuses.integrations.map((item) => [item.provider, item]),
     );
@@ -314,22 +296,14 @@ function App() {
       const metadataChanged = current?.configured
         && (endpoint !== (current.endpoint || null) || model !== (current.model || null));
       if (!secret && !metadataChanged) continue;
-      await request(`/integrations/${item.provider}`, {
+      await api(`/integrations/${item.provider}`, {
         method: "PUT",
         body: JSON.stringify({ endpoint, model, secret }),
       });
     }
 
-    const updatedStatuses = await request("/integrations");
-    localStorage.setItem("labour-token", nextToken);
-    setToken(nextToken);
+    const updatedStatuses = await api("/integrations");
     setIntegrationStatuses(updatedStatuses.integrations);
-    setCases(casesBody.cases);
-    setActiveCase((current) => (
-      casesBody.cases.find((item) => item.case_id === current?.case_id)
-      || casesBody.cases[0]
-      || null
-    ));
     setError("");
   }
 
@@ -368,39 +342,29 @@ function App() {
               <ChevronRight size={15} />
             </button>
           ))}
-          {cases.length === 0 && (
-            <div className="case-list-empty">尚无案件，可先浏览右侧工作台功能。</div>
-          )}
         </div>
         <div className="security-note">
           <ShieldCheck size={17} />
-          <span>案件按所有者隔离<br />事实、证据、版本全程留痕</span>
+          <span>案件按所有者隔离<br />状态与事件全程留痕</span>
         </div>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
           <div>
-            <span className="eyebrow">{activeCase ? "当前案件" : "工作台概览"}</span>
+            <span className="eyebrow">当前案件</span>
             <h1>{activeCase?.current_goal || "开始建立你的案件事实"}</h1>
-            {activeCase && (
-              <p>{roleLabels[activeCase.role_id]}视角 · 当前由 {activeCase.active_agent} 处理</p>
-            )}
           </div>
           <div className="topbar-actions">
             {activeCase && (
               <div className="stage-pill">
                 <span className={`pulse ${streamState}`} />
                 {stageLabels[activeCase.stage]}
-                <small>{streamLabel(streamState)}</small>
               </div>
             )}
             <button
               className="settings-trigger"
-              onClick={() => {
-                setSettingsNotice("");
-                setShowSettings(true);
-              }}
+              onClick={() => setShowSettings(true)}
             >
               <Settings2 size={15} /> 设置
             </button>
@@ -432,7 +396,7 @@ function App() {
             onOpen={(id) => api(`/cases/${activeCase.case_id}/artifacts/${id}`)}
           />
         ) : (
-          <BrowseWorkspace connected={Boolean(token)} />
+          <EmptyCase onCreate={requestNewCase} />
         )}
       </main>
 
@@ -445,17 +409,11 @@ function App() {
       )}
       {showSettings && (
         <SettingsDrawer
-          token={token}
           statuses={integrationStatuses}
-          notice={settingsNotice}
-          onClose={() => {
-            setShowSettings(false);
-            setSettingsNotice("");
-          }}
+          onClose={() => setShowSettings(false)}
           onSave={async (payload) => {
             await saveSettings(payload);
             setShowSettings(false);
-            setSettingsNotice("");
           }}
           onDelete={deleteIntegration}
         />
@@ -463,7 +421,7 @@ function App() {
       {activeOperation && (
         <div className="busy-indicator">
           <LoaderCircle className="spin" size={18} />
-          <span>正在执行案件任务<small>{activeOperation.commandId.slice(0, 8)}</small></span>
+          <span>正在执行案件任务</span>
           <button onClick={() => cancelActiveOperation().catch((reason) => setError(reason.message))}>
             取消
           </button>
@@ -536,49 +494,6 @@ function CaseWorkspace({
   );
 }
 
-function BrowseWorkspace({ connected }) {
-  return (
-    <div className="case-grid browse-workspace" aria-label="工作台功能概览">
-      <section className="conversation panel">
-        <PanelTitle icon={MessageSquareText} title="案件对话" meta="由 Controller 统一协调" />
-        <div className="conversation-body">
-          <div className="conversation-intro">
-            <Scale size={22} />
-            <p>在这里按时间描述争议经过。Controller 会追问缺失事实，并调度证据、法源、计算、分析和文书能力。</p>
-          </div>
-          <Muted text="建立案件后，对话与 committed 事件会显示在这里" />
-        </div>
-        <Composer disabled disabledHint="建立案件后可提交陈述" onSend={() => {}} />
-      </section>
-
-      <div className="right-column">
-        <section className="panel">
-          <PanelTitle icon={FileCheck2} title="事实与确认" meta="候选事实与冲突" />
-          <FeatureEmpty
-            title="确认关键案件事实"
-            text="系统提取的候选事实、证据支持关系和冲突会在这里等待确认。"
-          />
-        </section>
-        <section className="panel">
-          <PanelTitle icon={Upload} title="证据材料" meta="原件、正文与哈希分离" />
-          <Evidence items={[]} disabled onUpload={() => {}} />
-        </section>
-        <section className="panel">
-          <PanelTitle icon={BookOpen} title="争议焦点与法源" meta="真实来源可追溯" />
-          <FeatureEmpty
-            title="查看争议焦点与权威依据"
-            text="法律分析形成后，这里会展示真实法源、事实引用和证据引用。"
-          />
-        </section>
-        <section className="panel action-panel">
-          <PanelTitle icon={BriefcaseBusiness} title="计算与产物" meta="规则结果与文书版本" />
-          <BrowseActions connected={connected} />
-        </section>
-      </div>
-    </div>
-  );
-}
-
 function useCaseEventStream({ caseId, token, onEvent, onStateChange }) {
   const sequences = useRef(new Map());
   useEffect(() => {
@@ -640,6 +555,17 @@ function useCaseEventStream({ caseId, token, onEvent, onStateChange }) {
   }, [caseId, token, onEvent, onStateChange]);
 }
 
+function EmptyCase({ onCreate }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-icon"><Scale size={30} /></div>
+      <h2>从一个具体争议开始</h2>
+      <p>新建案件后，Controller 会先梳理事实，再调度证据解析、权威检索、规则计算和文书生成。</p>
+      <button onClick={onCreate}><Plus size={17} /> 新建劳动争议案件</button>
+    </div>
+  );
+}
+
 function NewCaseDialog({ onClose, onCreate, busy }) {
   const [role, setRole] = useState("worker");
   return (
@@ -682,9 +608,8 @@ function NewCaseDialog({ onClose, onCreate, busy }) {
   );
 }
 
-function SettingsDrawer({ token, statuses, notice, onClose, onSave, onDelete }) {
+function SettingsDrawer({ statuses, onClose, onSave, onDelete }) {
   const statusMap = Object.fromEntries(statuses.map((item) => [item.provider, item]));
-  const [accessToken, setAccessToken] = useState(token);
   const [forms, setForms] = useState(() => ({
     llm: {
       endpoint: statusMap.llm?.endpoint || "",
@@ -712,7 +637,6 @@ function SettingsDrawer({ token, statuses, notice, onClose, onSave, onDelete }) 
     setSettingsError("");
     try {
       await onSave({
-        accessToken,
         integrations: Object.entries(forms).map(([provider, value]) => ({
           provider,
           ...value,
@@ -747,8 +671,8 @@ function SettingsDrawer({ token, statuses, notice, onClose, onSave, onDelete }) 
         <header>
           <div>
             <span className="eyebrow">工作台设置</span>
-            <h2 id="settings-title">连接与外部服务</h2>
-            <p>访问令牌只保存在当前浏览器；服务密钥提交到本机后端并加密存入 PostgreSQL，保存后不会返回浏览器。</p>
+            <h2 id="settings-title">外部服务设置</h2>
+            <p>法律推理、视觉识别和法源检索密钥提交到本机后端，并加密存入 PostgreSQL；保存后不会返回浏览器。</p>
           </div>
           <button onClick={onClose} disabled={saving} aria-label="关闭设置">
             <X size={18} />
@@ -756,30 +680,12 @@ function SettingsDrawer({ token, statuses, notice, onClose, onSave, onDelete }) 
         </header>
 
         <form onSubmit={submit}>
-          {notice && <div className="settings-notice">{notice}</div>}
           {settingsError && (
             <div className="settings-error">
               <AlertTriangle size={15} />
               <span>{settingsError}</span>
             </div>
           )}
-
-          <section className="settings-section access-section">
-            <div className="settings-section-title">
-              <KeyRound size={16} />
-              <span>
-                <b>工作台访问令牌</b>
-                <small>用于案件所有者鉴权，仅保存在当前浏览器</small>
-              </span>
-            </div>
-            <input
-              type="password"
-              value={accessToken}
-              onChange={(event) => setAccessToken(event.target.value)}
-              placeholder="Bearer token"
-              autoComplete="off"
-            />
-          </section>
 
           {[
             ["llm", "法律推理 LLM", "OpenAI-compatible endpoint"],
@@ -847,7 +753,7 @@ function SettingsDrawer({ token, statuses, notice, onClose, onSave, onDelete }) 
 
           <div className="settings-actions">
             <span><ShieldCheck size={15} />数据库只保存密文，API 不回显密钥</span>
-            <button disabled={saving || !accessToken.trim()}>
+            <button disabled={saving}>
               {saving ? "正在保存…" : "保存设置"}
             </button>
           </div>
@@ -1189,49 +1095,16 @@ function Actions({ activeCase, busy, onCommand, onOpen }) {
   );
 }
 
-function BrowseActions({ connected }) {
-  return (
-    <div className="actions-wrap browse-actions">
-      <div className="action-buttons">
-        <button disabled><Calculator size={16} /> 计算工资基数</button>
-        <button disabled><Scale size={16} /> 生成法律分析</button>
-        <button disabled><FileText size={16} /> 生成仲裁申请书</button>
-      </div>
-      <FeatureEmpty
-        title="形成可追溯的规则结果与文书版本"
-        text={connected
-          ? "新建案件并确认事实后，可在这里计算、分析和生成文书。"
-          : "连接并建立案件后，可在这里计算、分析和生成文书。"}
-      />
-    </div>
-  );
-}
-
-function FeatureEmpty({ title, text }) {
-  return (
-    <div className="feature-empty">
-      <FileCheck2 size={18} />
-      <div><b>{title}</b><p>{text}</p></div>
-    </div>
-  );
-}
-
 function formatRuleResult(result) {
   const value = result.amount ?? result.wage_base ?? result.value;
   return value === undefined ? JSON.stringify(result) : String(value);
 }
 
 function settingsErrorMessage(error) {
-  if (error.code === "authentication_required") return "访问令牌无效，请检查后重新保存。";
-  if (error.code === "integration_admin_required") return "当前访问令牌没有修改外部服务配置的权限。";
+  if (error.code === "authentication_required") return "本地工作台会话已失效，请重新启动项目。";
+  if (error.code === "integration_admin_required") return "当前本地会话没有修改外部服务配置的权限，请检查启动配置。";
+  if (error.code === "local_session_unavailable") return error.message;
   return error.message || "设置保存失败";
-}
-
-function streamLabel(state) {
-  if (state === "online") return "事件在线";
-  if (state === "reconnecting") return "正在重连";
-  if (state === "connecting") return "正在连接";
-  return "事件离线";
 }
 
 function Muted({ text }) {

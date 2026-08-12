@@ -5,8 +5,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_DIR="${ROOT_DIR}/jobpilot-front"
 
-BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_BROWSER_HOST="${BACKEND_BROWSER_HOST:-127.0.0.1}"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 ensure_command() {
@@ -30,31 +32,103 @@ cleanup() {
 
 ensure_command lsof
 
-for required_var in DATABASE_URL APP_API_TOKENS_JSON; do
-  if [[ -z "${!required_var:-}" ]]; then
-    echo "[ERROR] ${required_var} is required."
-    exit 1
-  fi
-done
-
-echo "[INFO] LLM, OCR, and MCP credentials are configured after login in the web settings panel."
-echo "[INFO] They are encrypted in PostgreSQL; the encryption key remains outside the database."
-
 resolve_python_bin() {
-  # Prefer the active env interpreter (usually `python` in conda/venv).
+  local candidate
+  local candidates=("${ROOT_DIR}/.venv/bin/python")
   if command -v python >/dev/null 2>&1; then
-    echo "python"
-    return
+    candidates+=("$(command -v python)")
   fi
   if command -v python3 >/dev/null 2>&1; then
-    echo "python3"
-    return
+    candidates+=("$(command -v python3)")
   fi
-  echo "[ERROR] Missing command: python or python3"
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "${candidate}" ]] \
+      && "${candidate}" -c "import alembic, asyncpg, sqlalchemy, uvicorn" >/dev/null 2>&1; then
+      echo "${candidate}"
+      return
+    fi
+  done
+  echo "[ERROR] No Python interpreter with project dependencies was found." >&2
+  echo "[ERROR] Create .venv and install the project with: python3 -m pip install -e ." >&2
   exit 1
 }
 
 PYTHON_BIN="${PYTHON_BIN:-$(resolve_python_bin)}"
+
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  echo "[ERROR] DATABASE_URL is required."
+  exit 1
+fi
+
+configure_workbench_session() {
+  if [[ -z "${APP_API_TOKENS_JSON:-}" ]]; then
+    if [[ -z "${VITE_WORKBENCH_ACCESS_TOKEN:-}" ]]; then
+      VITE_WORKBENCH_ACCESS_TOKEN="$("${PYTHON_BIN}" -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    fi
+    APP_API_TOKENS_JSON="$(
+      WORKBENCH_TOKEN="${VITE_WORKBENCH_ACCESS_TOKEN}" "${PYTHON_BIN}" -c \
+        'import json, os; print(json.dumps({os.environ["WORKBENCH_TOKEN"]: "local-user"}))'
+    )"
+    export APP_API_TOKENS_JSON VITE_WORKBENCH_ACCESS_TOKEN
+    echo "[INFO] Created an automatic local workbench session."
+    return
+  fi
+
+  VITE_WORKBENCH_ACCESS_TOKEN="$("${PYTHON_BIN}" -c '
+import json
+import os
+import sys
+
+try:
+    mapping = json.loads(os.environ["APP_API_TOKENS_JSON"])
+except (KeyError, json.JSONDecodeError):
+    print("[ERROR] APP_API_TOKENS_JSON must be valid JSON.", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(mapping, dict) or not mapping:
+    print("[ERROR] APP_API_TOKENS_JSON must map tokens to actor IDs.", file=sys.stderr)
+    raise SystemExit(1)
+
+explicit = os.getenv("VITE_WORKBENCH_ACCESS_TOKEN", "").strip()
+if explicit:
+    if explicit not in mapping:
+        print("[ERROR] VITE_WORKBENCH_ACCESS_TOKEN is not present in APP_API_TOKENS_JSON.", file=sys.stderr)
+        raise SystemExit(1)
+    print(explicit)
+    raise SystemExit(0)
+
+if len(mapping) == 1:
+    print(next(iter(mapping)))
+    raise SystemExit(0)
+
+admins = {
+    item.strip()
+    for item in os.getenv("INTEGRATION_ADMIN_ACTOR_IDS", "").split(",")
+    if item.strip()
+}
+admin_tokens = [token for token, actor in mapping.items() if str(actor) in admins]
+if len(admin_tokens) == 1:
+    print(admin_tokens[0])
+    raise SystemExit(0)
+
+print(
+    "[ERROR] Multiple workbench users are configured; set VITE_WORKBENCH_ACCESS_TOKEN "
+    "to the local browser actor token.",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+')"
+  export VITE_WORKBENCH_ACCESS_TOKEN
+  echo "[INFO] Connected the browser to the configured local workbench session."
+}
+
+configure_workbench_session
+
+VITE_AGENT_API_BASE="${VITE_AGENT_API_BASE:-http://${BACKEND_BROWSER_HOST}:${BACKEND_PORT}/api/v1}"
+export VITE_AGENT_API_BASE
+
+echo "[INFO] No workbench token input is required in the browser."
+echo "[INFO] LLM, OCR, and MCP credentials are configured in the web settings panel."
+echo "[INFO] They are encrypted in PostgreSQL; the encryption key remains outside the database."
 
 if ! "${PYTHON_BIN}" -c "import uvicorn" >/dev/null 2>&1; then
   echo "[ERROR] ${PYTHON_BIN} cannot import uvicorn."
@@ -140,10 +214,10 @@ sleep 1
 assert_process_started "${BACKEND_PID}" "Backend"
 
 if [[ "${START_FRONTEND}" -eq 1 ]]; then
-  echo "[INFO] Starting frontend on http://localhost:${FRONTEND_PORT}"
+  echo "[INFO] Starting frontend on http://${FRONTEND_HOST}:${FRONTEND_PORT}"
   (
     cd "${FRONTEND_DIR}"
-    npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}"
+    npm run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}"
   ) &
   FRONTEND_PID=$!
   sleep 1
@@ -152,9 +226,9 @@ fi
 
 echo "[INFO] Services started."
 if [[ "${START_FRONTEND}" -eq 1 ]]; then
-  echo "[INFO] Frontend:      http://localhost:${FRONTEND_PORT}"
+  echo "[INFO] Frontend:      http://${FRONTEND_HOST}:${FRONTEND_PORT}"
 fi
-echo "[INFO] Backend:       http://127.0.0.1:${BACKEND_PORT}/api/v1/health"
+echo "[INFO] Backend:       http://${BACKEND_HOST}:${BACKEND_PORT}/api/v1/health"
 echo "[INFO] Press Ctrl+C to stop both."
 
 if [[ "${START_FRONTEND}" -eq 1 ]]; then

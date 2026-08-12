@@ -6,7 +6,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+body { margin: 0; min-width: 1120px; min-height: 100vh; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
@@ -77,12 +77,6 @@ button:disabled { cursor: not-allowed; }
   display: grid;
   gap: 5px;
   overflow: auto;
-}
-.case-list-empty {
-  padding: 14px 9px;
-  color: #8fa69d;
-  font-size: 10px;
-  line-height: 1.7;
 }
 .case-item {
   width: 100%;
@@ -166,11 +160,6 @@ button:disabled { cursor: not-allowed; }
   font-size: 27px;
   font-weight: 700;
 }
-.topbar p {
-  margin: 6px 0 0;
-  color: #78847e;
-  font-size: 11px;
-}
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -186,12 +175,6 @@ button:disabled { cursor: not-allowed; }
   align-items: center;
   gap: 8px;
   font-size: 12px;
-}
-.stage-pill small {
-  padding-left: 8px;
-  color: #819088;
-  border-left: 1px solid #d9dfda;
-  font-size: 9px;
 }
 .pulse {
   width: 7px;
@@ -221,7 +204,7 @@ button:disabled { cursor: not-allowed; }
   max-width: 1500px;
   margin: auto;
   display: grid;
-  grid-template-columns: minmax(400px, .9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(440px, .9fr) minmax(560px, 1.1fr);
   gap: 18px;
   align-items: start;
 }
@@ -377,19 +360,6 @@ button:disabled { cursor: not-allowed; }
   gap: 7px;
 }
 .composer button:disabled { opacity: .45; }
-
-.feature-empty {
-  min-height: 114px;
-  padding: 18px;
-  color: #617068;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 11px;
-}
-.feature-empty > svg { flex: 0 0 auto; color: #749181; }
-.feature-empty b { font-size: 11px; }
-.feature-empty p { max-width: 330px; margin: 5px 0 0; color: #8a948e; font-size: 10px; line-height: 1.65; }
 
 .stack-list,
 .evidence-list { padding: 10px 14px 14px; }
@@ -627,8 +597,6 @@ button:disabled { cursor: not-allowed; }
   background: #f6f2e8;
   font-size: 9px;
 }
-.browse-actions .feature-empty { min-height: 82px; padding-bottom: 8px; }
-
 .muted {
   min-height: 54px;
   color: #9aa29d;
@@ -669,7 +637,6 @@ button:disabled { cursor: not-allowed; }
   gap: 8px;
   font-size: 11px;
 }
-.busy-indicator span small { display: block; margin-top: 2px; color: #9eb5ab; font-size: 8px; }
 .busy-indicator button {
   margin-left: 4px;
   padding: 3px 7px;
@@ -681,6 +648,35 @@ button:disabled { cursor: not-allowed; }
 }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+  max-width: 620px;
+  margin: 17vh auto;
+  text-align: center;
+}
+.empty-icon {
+  width: 62px;
+  height: 62px;
+  margin: auto;
+  color: #9b7838;
+  border-radius: 50%;
+  background: #ede2c9;
+  display: grid;
+  place-items: center;
+}
+.empty-state h2 { font: 700 24px "Noto Serif SC"; }
+.empty-state p { color: #6e7b75; line-height: 1.8; }
+.empty-state button {
+  margin-top: 10px;
+  padding: 11px 16px;
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  background: #245a46;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 
 .dialog-backdrop {
   position: fixed;
@@ -803,7 +799,6 @@ button:disabled { cursor: not-allowed; }
 }
 .settings-drawer header > button:disabled { opacity: .5; }
 .settings-drawer form { padding: 10px 29px 34px; }
-.settings-notice,
 .settings-error {
   margin-top: 14px;
   padding: 10px 12px;
@@ -811,7 +806,6 @@ button:disabled { cursor: not-allowed; }
   font-size: 10px;
   line-height: 1.6;
 }
-.settings-notice { color: #6f592d; border: 1px solid #dfc995; background: #fbf3df; }
 .settings-error {
   color: #87372e;
   border: 1px solid #ddb6ae;
@@ -821,7 +815,6 @@ button:disabled { cursor: not-allowed; }
   gap: 7px;
 }
 .settings-section { padding: 20px 0 22px; border-bottom: 1px solid #d6d0c4; }
-.settings-section.access-section { padding-top: 16px; }
 .settings-section-title {
   margin-bottom: 14px;
   display: flex;
@@ -913,6 +906,7 @@ button:disabled { cursor: not-allowed; }
 }
 
 @media (max-width: 920px) {
+  body { min-width: 320px; }
   .app-shell { display: block; }
   .sidebar { position: relative; width: 100%; min-height: auto; padding: 16px; }
   .brand { padding-bottom: 16px; }
@@ -931,7 +925,6 @@ button:disabled { cursor: not-allowed; }
   .topbar { display: block; }
   .topbar h1 { font-size: 23px; }
   .topbar-actions { margin-top: 14px; justify-content: space-between; }
-  .stage-pill small { display: none; }
   .panel-title { align-items: flex-start; padding-top: 14px; padding-bottom: 14px; }
   .issues-layout,
   .artifact-list { grid-template-columns: 1fr; }
